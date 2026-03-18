@@ -212,6 +212,8 @@ export function ModelView() {
         cvFolds: cvFolds,
       });
 
+      result.target = target;
+      result.hyperparams = buildHyperparams();
       addTrainingResult(result);
       useAppStore.setState({ view: "results" });
     } catch (err) {
@@ -240,6 +242,7 @@ export function ModelView() {
           useCv: useCv,
           cvFolds: cvFolds,
         });
+        result.target = target;
         addTrainingResult(result);
       } catch (err) {
         console.error(`${algo.label} failed:`, err);

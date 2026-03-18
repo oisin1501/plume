@@ -6,6 +6,7 @@ import { DataTable } from "./components/DataTable";
 import { ShapeView } from "./components/ShapeView";
 import { ModelView } from "./components/ModelView";
 import { ResultsView } from "./components/ResultsView";
+import { VisualizeView } from "./components/VisualizeView";
 
 function App() {
   const view = useAppStore((s) => s.view);
@@ -69,6 +70,7 @@ function App() {
           >
             {view === "data" && (summary ? <DataTable /> : <DropZone />)}
             {view === "shape" && <ShapeView />}
+            {view === "visualize" && <VisualizeView />}
             {view === "model" && <ModelView />}
             {view === "results" && <ResultsView />}
           </motion.div>

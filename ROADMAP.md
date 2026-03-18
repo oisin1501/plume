@@ -43,6 +43,28 @@ What's built and working:
 - [x] Python training input validation (min rows, min classes, feature check)
 - [x] Dark mode: plume brand colors, selection colors, and surface contrast
 - [x] Pipeline visualization — connected-dot timeline in Shape tab showing transform history
+- [x] Visualize tab with four chart types:
+  - [x] Histogram — configurable bin count, numeric column selector
+  - [x] Scatter plot — X/Y numeric column selectors, sampled to 2000 points
+  - [x] Correlation heatmap — auto-computed Pearson correlation for all numeric columns
+  - [x] Box plot — numeric column grouped by any column, with whiskers, IQR, and outliers
+- [x] Feature engineering panel in Shape tab:
+  - [x] Combine columns — arithmetic between two numeric columns (add, subtract, multiply, divide)
+  - [x] Transform column — log, log10, sqrt, square, abs, standardize (z-score), normalize (0-1)
+  - [x] Bin column — equal-width binning into N groups (2-20 bins)
+
+---
+
+## Bug Fixes & Stability (completed)
+
+- [x] **Fixed: Pickle export and SHAP passed null target** — `PickleExportButton` and `ShapButton` now use `result.target` and `result.hyperparams` from the training result instead of hardcoded null values
+- [x] **Fixed: Training used stale file** — `train_model`, `export_model_pickle`, and `compute_shap` now export the current in-memory DataFrame to a temp CSV before sending to Python, so feature-engineered columns and all transforms are included
+- [x] **Fixed: Mutex poison cascading** — All `Mutex::lock().unwrap()` calls replaced with `.unwrap_or_else(|p| p.into_inner())` to recover from poison after any panic, preventing all-commands-broken state
+- [x] **Fixed: DataTable missing error handling** — `loadPage()` now wraps `invoke` in try/catch
+- [x] **Fixed: Python all-null column crash** — `prepare_features` now falls back to 0 when median is NaN (all-null numeric columns)
+- [x] **Fixed: NaN counted as classification class** — `n_classes` count now filters out NaN values
+- [x] **Fixed: Missing library errors** — XGBoost and LightGBM imports now give user-friendly error messages instead of raw tracebacks
+- [x] **Removed dead code** — `detect_separator_pub` removed (no longer needed after temp CSV export change)
 
 ---
 
@@ -79,8 +101,8 @@ What's built and working:
 - [ ] Support Excel (.xlsx) import
 - [ ] Time-series forecasting (v2 feature)
 - [ ] Auto-save projects to file-based project folders
-- [ ] Data visualization tab (histograms, scatter plots, correlation heatmap)
-- [ ] Feature engineering (create derived columns with expressions)
+- [x] ~~Data visualization tab (histograms, scatter plots, correlation heatmap)~~ — moved to v1
+- [x] ~~Feature engineering (create derived columns with expressions)~~ — moved to v1
 - [ ] AutoML mode ("Let Plume decide" — runs all algorithms, picks best)
 - [ ] Export model as ONNX for production deployment
 - [ ] Multi-language support

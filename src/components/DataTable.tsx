@@ -32,13 +32,17 @@ export function DataTable() {
 
   const loadPage = useCallback(
     async (newOffset: number) => {
-      const page = await invoke<TablePage>("get_table_page", {
-        offset: newOffset,
-        limit: PAGE_SIZE,
-      });
-      setLocalPage(page);
-      setOffset(newOffset);
-      tableRef.current?.scrollTo(0, 0);
+      try {
+        const page = await invoke<TablePage>("get_table_page", {
+          offset: newOffset,
+          limit: PAGE_SIZE,
+        });
+        setLocalPage(page);
+        setOffset(newOffset);
+        tableRef.current?.scrollTo(0, 0);
+      } catch (err) {
+        console.error("Failed to load page:", err);
+      }
     },
     []
   );

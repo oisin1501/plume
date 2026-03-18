@@ -728,10 +728,10 @@ function PickleExportButton({ result }: { result: TrainResult }) {
     try {
       await invoke("export_model_pickle", {
         task: result.task,
-        target: null, // Will be read from the training result context
+        target: result.target ?? null,
         features: result.features_used ?? [],
         algorithm: result.algorithm,
-        hyperparams: undefined,
+        hyperparams: result.hyperparams ?? {},
         outputPath: filePath,
       });
     } catch (err) {
@@ -815,10 +815,10 @@ function ShapButton({ result }: { result: TrainResult }) {
     try {
       const resp = await invoke<{ explanations: ShapExplanation[] }>("compute_shap", {
         task: result.task,
-        target: null,
+        target: result.target ?? null,
         features: result.features_used ?? [],
         algorithm: result.algorithm,
-        hyperparams: undefined,
+        hyperparams: result.hyperparams ?? {},
         nSamples: 5,
       });
       setExplanations(resp.explanations);

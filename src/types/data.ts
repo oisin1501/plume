@@ -25,7 +25,29 @@ export interface ColumnProfile {
   max: string | null;
 }
 
-export type View = "data" | "shape" | "model" | "results";
+export type View = "data" | "shape" | "visualize" | "model" | "results";
+
+export interface CorrelationMatrix {
+  columns: string[];
+  values: number[][]; // NxN
+}
+
+export interface ScatterData {
+  x: number[];
+  y: number[];
+  x_label: string;
+  y_label: string;
+}
+
+export interface BoxPlotGroup {
+  group: string;
+  min: number;
+  q1: number;
+  median: number;
+  q3: number;
+  max: number;
+  outliers: number[];
+}
 
 export interface TransformStep {
   id: string;
@@ -55,6 +77,8 @@ export interface TrainResult {
   status: string;
   task: string;
   algorithm: string;
+  target?: string | null;
+  hyperparams?: Record<string, any>;
   metrics: Record<string, any>;
   feature_importance?: { feature: string; importance: number }[];
   clusters?: { cluster: number; size: number; characteristics: string[] }[];

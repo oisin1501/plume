@@ -52,7 +52,11 @@ def prepare_features(df, features, target=None):
             X[col] = le.fit_transform(X[col].astype(str))
             encoders[col] = le
         else:
-            X[col] = X[col].fillna(X[col].median())
+            col_median = X[col].median()
+            if pd.isna(col_median):
+                X[col] = X[col].fillna(0)
+            else:
+                X[col] = X[col].fillna(col_median)
 
     y = None
     target_encoder = None
@@ -62,7 +66,11 @@ def prepare_features(df, features, target=None):
             target_encoder = LabelEncoder()
             y = target_encoder.fit_transform(y.astype(str))
         else:
-            y = y.fillna(y.median())
+            y_median = y.median()
+            if pd.isna(y_median):
+                y = y.fillna(0)
+            else:
+                y = y.fillna(y_median)
 
     return X, y, encoders, target_encoder
 
@@ -97,7 +105,10 @@ def get_algorithm(task, algo_name, hyperparams=None):
         return LinearRegression()
 
     if algo_name == "xgboost":
-        import xgboost as xgb
+        try:
+            import xgboost as xgb
+        except ImportError:
+            raise ValueError("XGBoost is not installed. Run: pip install xgboost")
         kw = {"random_state": 42, "verbosity": 0}
         kw["n_estimators"] = hp.get("n_estimators", 100)
         kw["learning_rate"] = hp.get("learning_rate", 0.1)
@@ -110,7 +121,10 @@ def get_algorithm(task, algo_name, hyperparams=None):
             return xgb.XGBRegressor(**kw)
 
     if algo_name == "lightgbm":
-        import lightgbm as lgb
+        try:
+            import lightgbm as lgb
+        except ImportError:
+            raise ValueError("LightGBM is not installed. Run: pip install lightgbm")
         kw = {"random_state": 42, "verbosity": -1}
         kw["n_estimators"] = hp.get("n_estimators", 100)
         kw["learning_rate"] = hp.get("learning_rate", 0.1)
@@ -149,7 +163,7 @@ def train_supervised(params):
         X, y, encoders, target_encoder = prepare_features(df, features, target)
 
         if task == "classification":
-            n_classes = len(set(y))
+            n_classes = len(set(v for v in y if not (isinstance(v, float) and np.isnan(v))))
             if n_classes < 2:
                 respond_error(f"Target column has only {n_classes} unique value(s). Classification requires at least 2.")
                 return

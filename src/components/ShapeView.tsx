@@ -1,8 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
 import type { ColumnProfile, DataSummary, TablePage, TypeRecommendation } from "../types/data";
+
+const NUMERIC_TYPES = new Set(["f64", "i64", "i32", "f32", "u8", "u16", "u32", "u64"]);
+
+type FeatureTab = "combine" | "transform" | "bin";
 
 interface TransformEntry {
   action: string;
@@ -18,6 +22,31 @@ export function ShapeView() {
   const [working, setWorking] = useState(false);
   const [typeRecs, setTypeRecs] = useState<TypeRecommendation[]>([]);
   const [transformLog, setTransformLog] = useState<TransformEntry[]>([]);
+  const [showFeatureEng, setShowFeatureEng] = useState(false);
+  const [featureTab, setFeatureTab] = useState<FeatureTab>("combine");
+  const [featureError, setFeatureError] = useState<string | null>(null);
+  const [featureSuccess, setFeatureSuccess] = useState(false);
+
+  // Combine columns state
+  const [combineColA, setCombineColA] = useState("");
+  const [combineColB, setCombineColB] = useState("");
+  const [combineOp, setCombineOp] = useState("add");
+  const [combineName, setCombineName] = useState("");
+
+  // Transform column state
+  const [transformCol, setTransformCol] = useState("");
+  const [transformType, setTransformType] = useState("log");
+  const [transformName, setTransformName] = useState("");
+
+  // Bin column state
+  const [binCol, setBinCol] = useState("");
+  const [binCount, setBinCount] = useState(5);
+  const [binName, setBinName] = useState("");
+
+  const numericColumns = useMemo(() => {
+    if (!summary) return [];
+    return summary.column_names.filter((_, i) => NUMERIC_TYPES.has(summary.column_types[i]));
+  }, [summary]);
 
   const refreshProfiles = useCallback(async () => {
     try {
@@ -127,6 +156,76 @@ export function ShapeView() {
     }
   }, [updateAfterTransform]);
 
+  // Auto-generate combine name when inputs change
+  useEffect(() => {
+    if (combineColA && combineColB) {
+      const opLabels: Record<string, string> = { add: "plus", subtract: "minus", multiply: "times", divide: "div" };
+      setCombineName(`${combineColA}_${opLabels[combineOp] ?? combineOp}_${combineColB}`);
+    }
+  }, [combineColA, combineColB, combineOp]);
+
+  // Auto-generate transform name when inputs change
+  useEffect(() => {
+    if (transformCol) {
+      const tLabels: Record<string, string> = { log: "log", log10: "log10", sqrt: "sqrt", square: "squared", abs: "abs", standardize: "zscore", normalize: "norm" };
+      setTransformName(`${transformCol}_${tLabels[transformType] ?? transformType}`);
+    }
+  }, [transformCol, transformType]);
+
+  // Auto-generate bin name when inputs change
+  useEffect(() => {
+    if (binCol) {
+      setBinName(`${binCol}_binned`);
+    }
+  }, [binCol]);
+
+  const showSuccessFlash = useCallback(() => {
+    setFeatureSuccess(true);
+    setTimeout(() => setFeatureSuccess(false), 2000);
+  }, []);
+
+  const handleCombineColumns = useCallback(async () => {
+    if (!combineColA || !combineColB || !combineName.trim()) return;
+    setWorking(true);
+    setFeatureError(null);
+    try {
+      await invoke("math_columns", { colA: combineColA, colB: combineColB, op: combineOp, newName: combineName.trim() });
+      await updateAfterTransform();
+      showSuccessFlash();
+    } catch (err) {
+      setFeatureError(String(err));
+      setWorking(false);
+    }
+  }, [combineColA, combineColB, combineOp, combineName, updateAfterTransform, showSuccessFlash]);
+
+  const handleTransformColumn = useCallback(async () => {
+    if (!transformCol || !transformName.trim()) return;
+    setWorking(true);
+    setFeatureError(null);
+    try {
+      await invoke("transform_column", { column: transformCol, transform: transformType, newName: transformName.trim() });
+      await updateAfterTransform();
+      showSuccessFlash();
+    } catch (err) {
+      setFeatureError(String(err));
+      setWorking(false);
+    }
+  }, [transformCol, transformType, transformName, updateAfterTransform, showSuccessFlash]);
+
+  const handleBinColumn = useCallback(async () => {
+    if (!binCol || !binName.trim()) return;
+    setWorking(true);
+    setFeatureError(null);
+    try {
+      await invoke("bin_column", { column: binCol, nBins: binCount, newName: binName.trim() });
+      await updateAfterTransform();
+      showSuccessFlash();
+    } catch (err) {
+      setFeatureError(String(err));
+      setWorking(false);
+    }
+  }, [binCol, binCount, binName, updateAfterTransform, showSuccessFlash]);
+
   const handleApplyAllRecommendations = useCallback(async () => {
     if (typeRecs.length === 0) return;
     setWorking(true);
@@ -159,6 +258,19 @@ export function ShapeView() {
               />
             </div>
           )}
+          <button
+            onClick={() => setShowFeatureEng(!showFeatureEng)}
+            className={`
+              px-3 py-1.5 text-[12px] font-medium rounded-[var(--radius-default)]
+              transition-colors duration-200 cursor-pointer
+              ${showFeatureEng
+                ? "bg-plume-500 text-white"
+                : "text-text-secondary hover:text-text-primary hover:bg-surface-alt"
+              }
+            `}
+          >
+            Feature Engineering
+          </button>
           {historyLen > 0 && (
             <button
               onClick={handleUndo}
@@ -229,6 +341,201 @@ export function ShapeView() {
           </button>
         </div>
       )}
+
+      {/* Feature Engineering panel */}
+      <AnimatePresence>
+        {showFeatureEng && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="bg-surface-alt border-b border-border px-6 py-4">
+              {/* Tabs */}
+              <div className="flex items-center gap-1 mb-4">
+                {([
+                  { id: "combine" as FeatureTab, label: "Combine columns" },
+                  { id: "transform" as FeatureTab, label: "Transform column" },
+                  { id: "bin" as FeatureTab, label: "Bin column" },
+                ]).map((tab) => (
+                  <button
+                    key={tab.id}
+                    onClick={() => { setFeatureTab(tab.id); setFeatureError(null); }}
+                    className={`
+                      px-3 py-1.5 text-[12px] font-medium rounded-[var(--radius-default)]
+                      transition-colors duration-200 cursor-pointer
+                      ${featureTab === tab.id
+                        ? "bg-plume-500 text-white"
+                        : "text-text-secondary hover:text-text-primary hover:bg-surface"
+                      }
+                    `}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab content */}
+              {featureTab === "combine" && (
+                <div className="flex items-end gap-3 flex-wrap">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Column A</label>
+                    <select
+                      value={combineColA}
+                      onChange={(e) => setCombineColA(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="">Select...</option>
+                      {numericColumns.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Operation</label>
+                    <select
+                      value={combineOp}
+                      onChange={(e) => setCombineOp(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="add">Add (+)</option>
+                      <option value="subtract">Subtract (&minus;)</option>
+                      <option value="multiply">Multiply (&times;)</option>
+                      <option value="divide">Divide (&divide;)</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Column B</label>
+                    <select
+                      value={combineColB}
+                      onChange={(e) => setCombineColB(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="">Select...</option>
+                      {numericColumns.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">New column name</label>
+                    <input
+                      type="text"
+                      value={combineName}
+                      onChange={(e) => setCombineName(e.target.value)}
+                      className="w-[160px] px-2 py-1 text-[11px] border border-plume-400 rounded-[var(--radius-default)] bg-surface text-text-primary outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={handleCombineColumns}
+                    disabled={working || !combineColA || !combineColB || !combineName.trim()}
+                    className="bg-plume-500 text-white hover:bg-plume-600 rounded-[var(--radius-default)] px-4 py-1.5 text-[12px] disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+                  >
+                    Create
+                  </button>
+                </div>
+              )}
+
+              {featureTab === "transform" && (
+                <div className="flex items-end gap-3 flex-wrap">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Column</label>
+                    <select
+                      value={transformCol}
+                      onChange={(e) => setTransformCol(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="">Select...</option>
+                      {numericColumns.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Transform</label>
+                    <select
+                      value={transformType}
+                      onChange={(e) => setTransformType(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="log">Log (ln)</option>
+                      <option value="log10">Log10</option>
+                      <option value="sqrt">Square root</option>
+                      <option value="square">Square</option>
+                      <option value="abs">Absolute value</option>
+                      <option value="standardize">Standardize (z-score)</option>
+                      <option value="normalize">Normalize (0-1)</option>
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">New column name</label>
+                    <input
+                      type="text"
+                      value={transformName}
+                      onChange={(e) => setTransformName(e.target.value)}
+                      className="w-[160px] px-2 py-1 text-[11px] border border-plume-400 rounded-[var(--radius-default)] bg-surface text-text-primary outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={handleTransformColumn}
+                    disabled={working || !transformCol || !transformName.trim()}
+                    className="bg-plume-500 text-white hover:bg-plume-600 rounded-[var(--radius-default)] px-4 py-1.5 text-[12px] disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+                  >
+                    Create
+                  </button>
+                </div>
+              )}
+
+              {featureTab === "bin" && (
+                <div className="flex items-end gap-3 flex-wrap">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Column</label>
+                    <select
+                      value={binCol}
+                      onChange={(e) => setBinCol(e.target.value)}
+                      className="px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                    >
+                      <option value="">Select...</option>
+                      {numericColumns.map((c) => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">Number of bins: {binCount}</label>
+                    <input
+                      type="range"
+                      min={2}
+                      max={20}
+                      value={binCount}
+                      onChange={(e) => setBinCount(Number(e.target.value))}
+                      className="w-[120px] accent-plume-500"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] text-text-tertiary">New column name</label>
+                    <input
+                      type="text"
+                      value={binName}
+                      onChange={(e) => setBinName(e.target.value)}
+                      className="w-[160px] px-2 py-1 text-[11px] border border-plume-400 rounded-[var(--radius-default)] bg-surface text-text-primary outline-none"
+                    />
+                  </div>
+                  <button
+                    onClick={handleBinColumn}
+                    disabled={working || !binCol || !binName.trim()}
+                    className="bg-plume-500 text-white hover:bg-plume-600 rounded-[var(--radius-default)] px-4 py-1.5 text-[12px] disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+                  >
+                    Create
+                  </button>
+                </div>
+              )}
+
+              {/* Error / success messages */}
+              {featureError && (
+                <p className="text-[11px] text-red-500 mt-2">{featureError}</p>
+              )}
+              {featureSuccess && (
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-2">Column created!</p>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Column list */}
       <div className="flex-1 overflow-auto">

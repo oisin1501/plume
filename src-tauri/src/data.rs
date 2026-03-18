@@ -1,6 +1,20 @@
 use polars::prelude::*;
 use polars::io::parquet::read::ParquetReader;
-use crate::{ColumnProfile, DataSummary, TablePage};
+use crate::{BoxPlotGroup, ColumnProfile, CorrelationMatrix, DataSummary, ScatterData, TablePage};
+
+/// Export the current in-memory DataFrame to a temp CSV file.
+/// Returns the path to the temp file.
+pub fn export_to_temp_csv(df: &mut DataFrame) -> Result<String, String> {
+    let dir = std::env::temp_dir();
+    let path = dir.join("plume_current_data.csv");
+    let path_str = path.to_string_lossy().to_string();
+    let file = std::fs::File::create(&path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    CsvWriter::new(file)
+        .finish(df)
+        .map_err(|e| format!("Failed to write temp CSV: {}", e))?;
+    Ok(path_str)
+}
 
 pub fn read_csv(path: &str) -> Result<DataFrame, String> {
     // Detect separator by reading the first few lines
@@ -20,10 +34,6 @@ pub fn read_csv(path: &str) -> Result<DataFrame, String> {
         .map_err(|e| format!("Failed to open file: {}", e))?
         .finish()
         .map_err(|e| format!("Failed to parse CSV: {}", e))
-}
-
-pub fn detect_separator_pub(sample: &str) -> u8 {
-    detect_separator(sample)
 }
 
 fn detect_separator(sample: &str) -> u8 {
@@ -433,6 +443,378 @@ pub fn type_recommendations(df: &DataFrame) -> Vec<crate::TypeRecommendation> {
         }
     }
     recs
+}
+
+pub fn correlation_matrix(df: &DataFrame) -> Result<CorrelationMatrix, String> {
+    // Collect numeric column names
+    let numeric_cols: Vec<String> = df
+        .columns()
+        .iter()
+        .filter(|c| c.as_materialized_series().dtype().is_numeric())
+        .map(|c| c.as_materialized_series().name().to_string())
+        .collect();
+
+    if numeric_cols.is_empty() {
+        return Err("No numeric columns found".to_string());
+    }
+
+    let n = numeric_cols.len();
+    let mut values = vec![vec![0.0f64; n]; n];
+
+    for i in 0..n {
+        values[i][i] = 1.0;
+        for j in (i + 1)..n {
+            let corr = pearson_corr(df, &numeric_cols[i], &numeric_cols[j]);
+            values[i][j] = corr;
+            values[j][i] = corr;
+        }
+    }
+
+    Ok(CorrelationMatrix {
+        columns: numeric_cols,
+        values,
+    })
+}
+
+fn pearson_corr(df: &DataFrame, col_a: &str, col_b: &str) -> f64 {
+    let a = match df.column(col_a) {
+        Ok(c) => c.as_materialized_series().cast(&DataType::Float64).ok(),
+        Err(_) => None,
+    };
+    let b = match df.column(col_b) {
+        Ok(c) => c.as_materialized_series().cast(&DataType::Float64).ok(),
+        Err(_) => None,
+    };
+
+    let (a, b) = match (a, b) {
+        (Some(a), Some(b)) => (a, b),
+        _ => return 0.0,
+    };
+
+    let ca = match a.f64() {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    let cb = match b.f64() {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+
+    let mut sum_x = 0.0f64;
+    let mut sum_y = 0.0f64;
+    let mut sum_xy = 0.0f64;
+    let mut sum_x2 = 0.0f64;
+    let mut sum_y2 = 0.0f64;
+    let mut count = 0u64;
+
+    for (av, bv) in ca.into_iter().zip(cb.into_iter()) {
+        if let (Some(x), Some(y)) = (av, bv) {
+            sum_x += x;
+            sum_y += y;
+            sum_xy += x * y;
+            sum_x2 += x * x;
+            sum_y2 += y * y;
+            count += 1;
+        }
+    }
+
+    if count < 2 {
+        return 0.0;
+    }
+
+    let n = count as f64;
+    let numerator = n * sum_xy - sum_x * sum_y;
+    let denom_a = (n * sum_x2 - sum_x * sum_x).sqrt();
+    let denom_b = (n * sum_y2 - sum_y * sum_y).sqrt();
+
+    if denom_a < f64::EPSILON || denom_b < f64::EPSILON {
+        return 0.0;
+    }
+
+    let r = numerator / (denom_a * denom_b);
+    r.clamp(-1.0, 1.0)
+}
+
+pub fn scatter_data(df: &DataFrame, x_col: &str, y_col: &str) -> Result<ScatterData, String> {
+    let x_series = df
+        .column(x_col)
+        .map_err(|e| format!("Column '{}' not found: {}", x_col, e))?
+        .as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", x_col, e))?;
+    let y_series = df
+        .column(y_col)
+        .map_err(|e| format!("Column '{}' not found: {}", y_col, e))?
+        .as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", y_col, e))?;
+
+    let x_ca = x_series.f64().map_err(|e| format!("{}", e))?;
+    let y_ca = y_series.f64().map_err(|e| format!("{}", e))?;
+
+    // Collect non-null pairs
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    for (xv, yv) in x_ca.into_iter().zip(y_ca.into_iter()) {
+        if let (Some(x), Some(y)) = (xv, yv) {
+            points.push((x, y));
+        }
+    }
+
+    // Sample if more than 2000 rows
+    if points.len() > 2000 {
+        let step = points.len() as f64 / 2000.0;
+        let sampled: Vec<(f64, f64)> = (0..2000)
+            .map(|i| points[(i as f64 * step) as usize])
+            .collect();
+        points = sampled;
+    }
+
+    let x: Vec<f64> = points.iter().map(|(x, _)| *x).collect();
+    let y: Vec<f64> = points.iter().map(|(_, y)| *y).collect();
+
+    Ok(ScatterData {
+        x,
+        y,
+        x_label: x_col.to_string(),
+        y_label: y_col.to_string(),
+    })
+}
+
+pub fn box_plot_data(
+    df: &DataFrame,
+    numeric_col: &str,
+    group_col: &str,
+) -> Result<Vec<BoxPlotGroup>, String> {
+    let num_series = df
+        .column(numeric_col)
+        .map_err(|e| format!("Column '{}' not found: {}", numeric_col, e))?
+        .as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", numeric_col, e))?;
+    let grp_series = df
+        .column(group_col)
+        .map_err(|e| format!("Column '{}' not found: {}", group_col, e))?
+        .as_materialized_series()
+        .cast(&DataType::String)
+        .map_err(|e| format!("Cannot cast '{}' to string: {}", group_col, e))?;
+
+    let num_ca = num_series.f64().map_err(|e| format!("{}", e))?;
+    let grp_ca = grp_series.str().map_err(|e| format!("{}", e))?;
+
+    // Group values
+    let mut groups: std::collections::HashMap<String, Vec<f64>> =
+        std::collections::HashMap::new();
+
+    for (nv, gv) in num_ca.into_iter().zip(grp_ca.into_iter()) {
+        if let (Some(val), Some(group)) = (nv, gv) {
+            groups
+                .entry(group.to_string())
+                .or_insert_with(Vec::new)
+                .push(val);
+        }
+    }
+
+    // Sort groups by size descending and limit to top 20
+    let mut group_list: Vec<(String, Vec<f64>)> = groups.into_iter().collect();
+    group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    group_list.truncate(20);
+
+    let mut results: Vec<BoxPlotGroup> = Vec::new();
+
+    for (group_name, mut vals) in group_list {
+        if vals.is_empty() {
+            continue;
+        }
+        vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let n = vals.len();
+        let min = vals[0];
+        let max = vals[n - 1];
+        let median = percentile(&vals, 50.0);
+        let q1 = percentile(&vals, 25.0);
+        let q3 = percentile(&vals, 75.0);
+        let iqr = q3 - q1;
+        let lower_fence = q1 - 1.5 * iqr;
+        let upper_fence = q3 + 1.5 * iqr;
+
+        let mut outliers: Vec<f64> = vals
+            .iter()
+            .filter(|&&v| v < lower_fence || v > upper_fence)
+            .copied()
+            .collect();
+        outliers.truncate(50);
+
+        results.push(BoxPlotGroup {
+            group: group_name,
+            min,
+            q1,
+            median,
+            q3,
+            max,
+            outliers,
+        });
+    }
+
+    Ok(results)
+}
+
+fn percentile(sorted_vals: &[f64], pct: f64) -> f64 {
+    if sorted_vals.len() == 1 {
+        return sorted_vals[0];
+    }
+    let rank = (pct / 100.0) * (sorted_vals.len() - 1) as f64;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    if lower == upper {
+        sorted_vals[lower]
+    } else {
+        let frac = rank - lower as f64;
+        sorted_vals[lower] * (1.0 - frac) + sorted_vals[upper] * frac
+    }
+}
+
+pub fn math_columns(df: &DataFrame, col_a: &str, col_b: &str, op: &str, new_name: &str) -> Result<DataFrame, String> {
+    let a = df.column(col_a).map_err(|e| format!("{}", e))?
+        .as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", col_a, e))?;
+    let b = df.column(col_b).map_err(|e| format!("{}", e))?
+        .as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", col_b, e))?;
+
+    let ca = a.f64().map_err(|e| format!("{}", e))?;
+    let cb = b.f64().map_err(|e| format!("{}", e))?;
+
+    let result: Float64Chunked = match op {
+        "add" => ca + cb,
+        "subtract" => ca - cb,
+        "multiply" => ca * cb,
+        "divide" => {
+            ca.into_iter()
+                .zip(cb.into_iter())
+                .map(|(a_val, b_val)| match (a_val, b_val) {
+                    (Some(a), Some(b)) if b != 0.0 => Some(a / b),
+                    _ => None,
+                })
+                .collect::<Float64Chunked>()
+        }
+        _ => return Err(format!("Unknown operation: {}. Use add, subtract, multiply, or divide", op)),
+    };
+
+    let new_series = result.with_name(new_name.into()).into_series();
+    let mut new_df = df.clone();
+    new_df.with_column(new_series.into()).map_err(|e| format!("Failed to add column: {}", e))?;
+    Ok(new_df)
+}
+
+pub fn transform_column(df: &DataFrame, column: &str, transform: &str, new_name: &str) -> Result<DataFrame, String> {
+    let col = df.column(column).map_err(|e| format!("{}", e))?;
+    let casted = col.as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", column, e))?;
+    let ca = casted.f64().map_err(|e| format!("{}", e))?;
+
+    let result: Float64Chunked = match transform {
+        "log" => {
+            ca.into_iter()
+                .map(|v| v.and_then(|x| if x > 0.0 { Some(x.ln()) } else { None }))
+                .collect()
+        }
+        "log10" => {
+            ca.into_iter()
+                .map(|v| v.and_then(|x| if x > 0.0 { Some(x.log10()) } else { None }))
+                .collect()
+        }
+        "sqrt" => {
+            ca.into_iter()
+                .map(|v| v.and_then(|x| if x >= 0.0 { Some(x.sqrt()) } else { None }))
+                .collect()
+        }
+        "square" => {
+            ca.into_iter()
+                .map(|v| v.map(|x| x * x))
+                .collect()
+        }
+        "abs" => {
+            ca.into_iter()
+                .map(|v| v.map(|x| x.abs()))
+                .collect()
+        }
+        "standardize" => {
+            let mean = ca.mean().ok_or("Cannot compute mean for standardization")?;
+            let std = ca.std(1).ok_or("Cannot compute std for standardization")?;
+            if std < f64::EPSILON {
+                return Err("Standard deviation is zero; cannot standardize".to_string());
+            }
+            ca.into_iter()
+                .map(|v| v.map(|x| (x - mean) / std))
+                .collect()
+        }
+        "normalize" => {
+            let min = ca.min().ok_or("Cannot compute min for normalization")?;
+            let max = ca.max().ok_or("Cannot compute max for normalization")?;
+            let range = max - min;
+            if range < f64::EPSILON {
+                return Err("Min equals max; cannot normalize".to_string());
+            }
+            ca.into_iter()
+                .map(|v| v.map(|x| (x - min) / range))
+                .collect()
+        }
+        _ => return Err(format!("Unknown transform: {}. Use log, log10, sqrt, square, abs, standardize, or normalize", transform)),
+    };
+
+    let new_series = result.with_name(new_name.into()).into_series();
+    let mut new_df = df.clone();
+    new_df.with_column(new_series.into()).map_err(|e| format!("Failed to add column: {}", e))?;
+    Ok(new_df)
+}
+
+pub fn bin_column(df: &DataFrame, column: &str, n_bins: usize, new_name: &str) -> Result<DataFrame, String> {
+    if n_bins == 0 {
+        return Err("Number of bins must be greater than zero".to_string());
+    }
+
+    let col = df.column(column).map_err(|e| format!("{}", e))?;
+    let casted = col.as_materialized_series()
+        .cast(&DataType::Float64)
+        .map_err(|e| format!("Cannot cast '{}' to f64: {}", column, e))?;
+    let ca = casted.f64().map_err(|e| format!("{}", e))?;
+
+    let min_val = ca.min().ok_or("Cannot compute min for binning")?;
+    let max_val = ca.max().ok_or("Cannot compute max for binning")?;
+
+    let bin_width = if (max_val - min_val).abs() < f64::EPSILON {
+        1.0
+    } else {
+        (max_val - min_val) / n_bins as f64
+    };
+
+    // Build bin edges and labels
+    let mut labels: Vec<String> = Vec::with_capacity(n_bins);
+    for i in 0..n_bins {
+        let low = min_val + i as f64 * bin_width;
+        let high = low + bin_width;
+        labels.push(format!("{:.1}-{:.1}", low, high));
+    }
+
+    let binned: StringChunked = ca.into_iter()
+        .map(|v| {
+            v.map(|x| {
+                let mut bin = ((x - min_val) / bin_width) as usize;
+                if bin >= n_bins {
+                    bin = n_bins - 1;
+                }
+                labels[bin].clone()
+            })
+        })
+        .collect::<StringChunked>();
+
+    let new_series = binned.with_name(new_name.into()).into_series();
+    let mut new_df = df.clone();
+    new_df.with_column(new_series.into()).map_err(|e| format!("Failed to add column: {}", e))?;
+    Ok(new_df)
 }
 
 fn anyvalue_to_json(val: &AnyValue) -> serde_json::Value {

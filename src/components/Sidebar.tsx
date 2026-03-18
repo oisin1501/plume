@@ -6,6 +6,7 @@ import type { View } from "../types/data";
 const navItems: { id: View; label: string }[] = [
   { id: "data", label: "Data" },
   { id: "shape", label: "Shape" },
+  { id: "visualize", label: "Visualize" },
   { id: "model", label: "Model" },
   { id: "results", label: "Results" },
 ];
