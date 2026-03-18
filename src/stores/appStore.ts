@@ -58,10 +58,14 @@ export const useAppStore = create<AppState>((set) => ({
     await new Promise((r) => setTimeout(r, 100));
 
     try {
-      const isParquet = path.toLowerCase().endsWith(".parquet");
+      const lowerPath = path.toLowerCase();
+      const isParquet = lowerPath.endsWith(".parquet");
+      const isExcel = lowerPath.endsWith(".xlsx") || lowerPath.endsWith(".xls");
       const summary = isParquet
         ? await invoke<DataSummary>("load_parquet", { path })
-        : await invoke<DataSummary>("load_csv", { path });
+        : isExcel
+          ? await invoke<DataSummary>("load_excel", { path })
+          : await invoke<DataSummary>("load_csv", { path });
 
       const page = await invoke<TablePage>("get_table_page", {
         offset: 0,

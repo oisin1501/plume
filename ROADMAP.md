@@ -52,6 +52,13 @@ What's built and working:
   - [x] Combine columns — arithmetic between two numeric columns (add, subtract, multiply, divide)
   - [x] Transform column — log, log10, sqrt, square, abs, standardize (z-score), normalize (0-1)
   - [x] Bin column — equal-width binning into N groups (2-20 bins)
+- [x] Bundled Python runtime — PyInstaller onedir bundle includes Python 3.13 + numpy + pandas + scikit-learn + xgboost + lightgbm + shap. No user-installed Python required.
+- [x] Excel (.xlsx/.xls) import via calamine crate
+- [x] Plain-language result explanations:
+  - [x] Auto-generated summary with accuracy/R²/cluster count and top features
+  - [x] Color-coded quality assessment (strong/reasonable/struggling)
+  - [x] Metric tooltips (hover "?" for explanation of accuracy, precision, R², etc.)
+  - [x] Contextual explanations for feature importance, confusion matrix, and ROC curves
 
 ---
 
@@ -98,7 +105,7 @@ What's built and working:
 
 ## Nice to Have (Post-v1)
 
-- [ ] Support Excel (.xlsx) import
+- [x] ~~Support Excel (.xlsx) import~~ — moved to v1
 - [ ] Time-series forecasting (v2 feature)
 - [ ] Auto-save projects to file-based project folders
 - [x] ~~Data visualization tab (histograms, scatter plots, correlation heatmap)~~ — moved to v1

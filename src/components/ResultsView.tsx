@@ -9,6 +9,20 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../stores/appStore";
 import type { TrainResult } from "../types/data";
 
+const METRIC_EXPLANATIONS: Record<string, string> = {
+  Accuracy: "The percentage of predictions that were correct",
+  Precision: "Of all positive predictions, how many were actually correct",
+  Recall: "Of all actual positives, how many did the model find",
+  F1: "A balance between precision and recall (harmonic mean)",
+  "R²": "How much of the variation in the data the model explains (1.0 = perfect)",
+  MAE: "Average size of prediction errors (lower is better)",
+  RMSE: "Average prediction error, penalizing large errors more (lower is better)",
+  AUC: "How well the model distinguishes between classes (1.0 = perfect, 0.5 = random guessing)",
+  Silhouette: "How well-separated the clusters are (-1 to 1, higher is better)",
+  Inertia: "How compact the clusters are (lower is better)",
+  Groups: "The number of distinct clusters found in your data",
+};
+
 const ALGO_LABELS: Record<string, string> = {
   random_forest: "Random Forest",
   logistic_regression: "Logistic Regression",
@@ -131,6 +145,67 @@ export function ResultsView() {
             </h2>
           </div>
 
+          {/* Plain-English summary */}
+          <div className="bg-plume-50 dark:bg-plume-500/10 rounded-[var(--radius-default)] px-4 py-3">
+            <p className="text-[13px] text-text-secondary leading-relaxed">
+              {isClassification && (
+                <>
+                  Your model can predict the target with {((result.metrics.accuracy ?? 0) * 100).toFixed(1)}% accuracy.
+                  {result.feature_importance && result.feature_importance.length > 0 && (
+                    <> The most important factors are {result.feature_importance.slice(0, 3).map((fi) => fi.feature).join(", ")}.</>
+                  )}
+                </>
+              )}
+              {isRegression && (
+                <>
+                  Your model explains {((result.metrics.r2 ?? 0) * 100).toFixed(1)}% of the variation in the target.
+                  {result.feature_importance && result.feature_importance.length > 0 && (
+                    <> The most important factors are {result.feature_importance.slice(0, 3).map((fi) => fi.feature).join(", ")}.</>
+                  )}
+                </>
+              )}
+              {isClustering && (
+                <>
+                  Your data was grouped into {result.metrics.n_clusters} clusters.
+                  {result.clusters && result.clusters.length > 0 && (
+                    <> The largest group has {Math.max(...result.clusters.map((c) => c.size)).toLocaleString()} items.</>
+                  )}
+                </>
+              )}
+            </p>
+            {/* Quality assessment */}
+            {isClassification && result.metrics.accuracy != null && (
+              <p className={`text-[12px] mt-1.5 font-medium ${
+                result.metrics.accuracy > 0.9
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : result.metrics.accuracy >= 0.7
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400"
+              }`}>
+                {result.metrics.accuracy > 0.9
+                  ? "This is a strong result."
+                  : result.metrics.accuracy >= 0.7
+                    ? "This is a reasonable result — there may be room for improvement."
+                    : "This model is struggling — consider adding more features or trying different algorithms."}
+              </p>
+            )}
+            {isRegression && result.metrics.r2 != null && (
+              <p className={`text-[12px] mt-1.5 font-medium ${
+                result.metrics.r2 > 0.8
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : result.metrics.r2 >= 0.5
+                    ? "text-amber-600 dark:text-amber-400"
+                    : "text-red-600 dark:text-red-400"
+              }`}>
+                {result.metrics.r2 > 0.8
+                  ? "This is a strong result."
+                  : result.metrics.r2 >= 0.5
+                    ? "This is a reasonable result."
+                    : "The model explains less than half the variation — consider different features."}
+              </p>
+            )}
+          </div>
+
           {/* Metrics */}
           <div>
             <h3 className="text-[12px] text-text-secondary mb-3">Metrics</h3>
@@ -163,7 +238,8 @@ export function ResultsView() {
           {/* Feature importance */}
           {result.feature_importance && result.feature_importance.length > 0 && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-3">What matters most</h3>
+              <h3 className="text-[12px] text-text-secondary mb-1">What matters most</h3>
+              <p className="text-[11px] text-text-tertiary mb-3">This shows which columns had the biggest impact on predictions. Taller bars = more influence.</p>
               <div className="flex flex-col gap-2">
                 {result.feature_importance.slice(0, 10).map((fi, i) => {
                   const maxImp = result.feature_importance![0].importance;
@@ -194,7 +270,8 @@ export function ResultsView() {
           {/* Confusion matrix */}
           {isClassification && result.metrics.confusion_matrix && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-3">Confusion Matrix</h3>
+              <h3 className="text-[12px] text-text-secondary mb-1">Confusion Matrix</h3>
+              <p className="text-[11px] text-text-tertiary mb-3">Each cell shows how many items were predicted as one category but actually belonged to another. Diagonal cells (top-left to bottom-right) are correct predictions.</p>
               <ConfusionMatrix
                 matrix={result.metrics.confusion_matrix.matrix}
                 labels={result.metrics.confusion_matrix.labels}
@@ -234,9 +311,10 @@ export function ResultsView() {
           {/* ROC Curve (classification) */}
           {isClassification && result.roc_curve && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-3">
+              <h3 className="text-[12px] text-text-secondary mb-1">
                 ROC Curve{result.roc_curve.auc != null && ` (AUC = ${result.roc_curve.auc.toFixed(3)})`}
               </h3>
+              <p className="text-[11px] text-text-tertiary mb-3">The closer the curve is to the top-left corner, the better the model. The diagonal line represents random guessing.</p>
               <ResponsiveContainer width="100%" height={260}>
                 <LineChart
                   data={result.roc_curve.fpr.map((fpr, i) => ({
@@ -589,7 +667,8 @@ function ComparisonTable({
       {/* Combined ROC curve overlay (classification only) */}
       {isClassification && results.some((r) => r.roc_curve) && (
         <div className="mt-6">
-          <h3 className="text-[12px] text-text-secondary mb-3">ROC Curves</h3>
+          <h3 className="text-[12px] text-text-secondary mb-1">ROC Curves</h3>
+          <p className="text-[11px] text-text-tertiary mb-3">The closer the curve is to the top-left corner, the better the model. The diagonal line represents random guessing.</p>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
@@ -672,9 +751,20 @@ function ComparisonTable({
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
+  const explanation = METRIC_EXPLANATIONS[label];
   return (
     <div className="p-3 border border-border rounded-[var(--radius-default)]">
-      <p className="text-[11px] text-text-tertiary mb-1">{label}</p>
+      <p className="text-[11px] text-text-tertiary mb-1">
+        {label}
+        {explanation && (
+          <span
+            className="ml-1 text-text-tertiary/60 cursor-help"
+            title={explanation}
+          >
+            ?
+          </span>
+        )}
+      </p>
       <p className="text-[18px] font-semibold text-text-primary tabular-nums">{value}</p>
     </div>
   );

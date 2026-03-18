@@ -37,6 +37,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "../python/dist/plume_ml/plume_ml": "plume_ml/plume_ml",
+      "../python/dist/plume_ml/_internal": "plume_ml/_internal"
+    }
   }
 }

@@ -379,6 +379,31 @@ async fn load_parquet(path: String, state: State<'_, AppState>) -> Result<DataSu
 }
 
 #[tauri::command]
+async fn load_excel(path: String, state: State<'_, AppState>) -> Result<DataSummary, String> {
+    let path_clone = path.clone();
+
+    let (df, summary) = tokio::task::spawn_blocking(move || {
+        let df = data::read_excel(&path_clone)?;
+        if df.height() == 0 {
+            return Err("File is empty or contains no data rows".to_string());
+        }
+        if df.width() == 0 {
+            return Err("File contains no columns".to_string());
+        }
+        let summary = data::get_summary(&df);
+        Ok::<_, String>((df, summary))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))??;
+
+    *state.dataframe.lock().unwrap_or_else(|p| p.into_inner()) = Some(df);
+    *state.file_path.lock().unwrap_or_else(|p| p.into_inner()) = Some(path);
+    state.history.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    state.transform_log.lock().unwrap_or_else(|p| p.into_inner()).clear();
+    Ok(summary)
+}
+
+#[tauri::command]
 async fn get_column_distribution(column_name: String, state: State<'_, AppState>) -> Result<ColumnDistribution, String> {
     let guard = state.dataframe.lock().unwrap_or_else(|p| p.into_inner());
     let df = guard.as_ref().ok_or("No dataset loaded")?;
@@ -570,6 +595,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_csv,
             load_parquet,
+            load_excel,
             get_table_page,
             get_column_profile,
             get_summary,

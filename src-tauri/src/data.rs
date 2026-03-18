@@ -1,5 +1,6 @@
 use polars::prelude::*;
 use polars::io::parquet::read::ParquetReader;
+use calamine::{open_workbook_auto, Reader, Data};
 use crate::{BoxPlotGroup, ColumnProfile, CorrelationMatrix, DataSummary, ScatterData, TablePage};
 
 /// Export the current in-memory DataFrame to a temp CSV file.
@@ -290,6 +291,88 @@ pub fn read_parquet(path: &str) -> Result<DataFrame, String> {
     ParquetReader::new(file)
         .finish()
         .map_err(|e| format!("Failed to parse Parquet: {}", e))
+}
+
+pub fn read_excel(path: &str) -> Result<DataFrame, String> {
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|e| format!("Failed to open Excel file: {}", e))?;
+
+    let range = workbook
+        .worksheet_range_at(0)
+        .ok_or_else(|| "Excel file contains no sheets".to_string())?
+        .map_err(|e| format!("Failed to read sheet: {}", e))?;
+
+    let mut rows_iter = range.rows();
+
+    // First row = headers
+    let header_row = rows_iter.next().ok_or("Excel file is empty")?;
+    let headers: Vec<String> = header_row
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| {
+            let s = cell_to_string(cell);
+            if s.is_empty() { format!("column_{}", i) } else { s }
+        })
+        .collect();
+
+    let n_cols = headers.len();
+
+    // Collect data columns as Vec<Vec<String>>
+    let mut columns: Vec<Vec<String>> = vec![Vec::new(); n_cols];
+    for row in rows_iter {
+        for (j, cell) in row.iter().enumerate() {
+            if j < n_cols {
+                columns[j].push(cell_to_string(cell));
+            }
+        }
+        // Pad short rows
+        for j in row.len()..n_cols {
+            columns[j].push(String::new());
+        }
+    }
+
+    // Build DataFrame with String columns, then try to cast numeric-looking ones to f64
+    let mut series_vec: Vec<Column> = Vec::with_capacity(n_cols);
+    for (i, col_data) in columns.into_iter().enumerate() {
+        let name = &headers[i];
+        let str_series = Series::new(name.into(), &col_data);
+
+        // Try to parse as f64 if most non-empty values look numeric
+        let non_empty: Vec<&String> = col_data.iter().filter(|s| !s.is_empty()).collect();
+        if !non_empty.is_empty() {
+            let numeric_count = non_empty.iter().filter(|s| s.parse::<f64>().is_ok()).count();
+            let ratio = numeric_count as f64 / non_empty.len() as f64;
+            if ratio > 0.8 {
+                // Cast: replace empty strings with null, then cast to f64
+                let f64_vals: Vec<Option<f64>> = col_data
+                    .iter()
+                    .map(|s| if s.is_empty() { None } else { s.parse::<f64>().ok() })
+                    .collect();
+                let f64_series = Series::new(name.into(), &f64_vals);
+                series_vec.push(f64_series.into());
+                continue;
+            }
+        }
+
+        series_vec.push(str_series.into());
+    }
+
+    let height = series_vec.first().map(|c| c.len()).unwrap_or(0);
+    DataFrame::new(height, series_vec).map_err(|e| format!("Failed to build DataFrame: {}", e))
+}
+
+fn cell_to_string(cell: &Data) -> String {
+    match cell {
+        Data::Int(i) => i.to_string(),
+        Data::Float(f) => f.to_string(),
+        Data::String(s) => s.clone(),
+        Data::Bool(b) => b.to_string(),
+        Data::DateTime(dt) => dt.to_string(),
+        Data::DateTimeIso(s) => s.to_string(),
+        Data::DurationIso(s) => s.to_string(),
+        Data::Error(e) => format!("{:?}", e),
+        Data::Empty => String::new(),
+    }
 }
 
 pub fn sort_by_column(df: &DataFrame, column: &str, descending: bool) -> Result<DataFrame, String> {

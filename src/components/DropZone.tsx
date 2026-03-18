@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useAppStore } from "../stores/appStore";
 
-const VALID_EXTENSIONS = ["csv", "tsv", "parquet"];
+const VALID_EXTENSIONS = ["csv", "tsv", "parquet", "xlsx", "xls"];
 
 export function DropZone() {
   const [isDragging, setIsDragging] = useState(false);
@@ -31,7 +31,7 @@ export function DropZone() {
             loadFile(path);
           } else {
             useAppStore.setState({
-              error: `Unsupported file type ".${ext}". Plume supports CSV, TSV, and Parquet files.`,
+              error: `Unsupported file type ".${ext}". Plume supports CSV, TSV, Parquet, and Excel files.`,
             });
           }
         }
@@ -48,7 +48,7 @@ export function DropZone() {
     const file = await open({
       multiple: false,
       filters: [
-        { name: "Data files", extensions: ["csv", "tsv", "parquet"] },
+        { name: "Data files", extensions: ["csv", "tsv", "parquet", "xlsx", "xls"] },
       ],
     });
     if (file) {
@@ -85,7 +85,7 @@ export function DropZone() {
               <span className="text-plume-600 dark:text-plume-500">browse</span>
             </p>
             <p className="text-[12px] text-text-tertiary mt-2">
-              CSV, TSV, or Parquet
+              CSV, TSV, Parquet, or Excel
             </p>
           </motion.div>
 

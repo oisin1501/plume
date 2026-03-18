@@ -22,6 +22,11 @@ __pycache__/
 *.pyo
 *.pkl
 
+# PyInstaller
+python/dist/
+python/build/
+python/*.spec
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

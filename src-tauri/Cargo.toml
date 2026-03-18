@@ -24,3 +24,4 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 polars = { version = "0.53.0", features = ["csv", "parquet", "json", "lazy"] }
 tokio = { version = "1.50.0", features = ["rt"] }
+calamine = "0.26"

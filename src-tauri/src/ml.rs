@@ -1,6 +1,14 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 
+/// Locate the bundled `plume_ml` binary.
+/// Production (inside a macOS .app): sits next to the main executable.
+/// Development: fall back to `python3 python/plume_ml.py`.
+enum MlBackend {
+    Bundled(std::path::PathBuf),
+    PythonScript { python: String, script: std::path::PathBuf },
+}
+
 fn find_python3() -> String {
     let candidates = [
         "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
@@ -21,31 +29,62 @@ fn find_python3() -> String {
     "python3".to_string()
 }
 
-pub fn run_ml_command(command: serde_json::Value) -> Result<serde_json::Value, String> {
-    let python_script = std::env::current_exe()
+fn resolve_backend() -> Result<MlBackend, String> {
+    let exe_dir = std::env::current_exe()
         .map_err(|e| format!("Failed to get exe path: {}", e))?
         .parent()
         .ok_or("No parent dir")?
-        .join("../../../python/plume_ml.py")
+        .to_path_buf();
+
+    // 1. Check for bundled binary next to the app executable (production — onefile)
+    let bundled = exe_dir.join("plume_ml");
+    if bundled.exists() && bundled.is_file() {
+        return Ok(MlBackend::Bundled(bundled));
+    }
+
+    // 2. Check Tauri resource dir for onedir bundle (production — macOS .app)
+    //    Resources are copied to Contents/Resources/ in the .app bundle
+    let resource_candidates = [
+        exe_dir.join("../Resources/plume_ml/plume_ml"),
+        exe_dir.join("../Resources/plume_ml"),
+        exe_dir.join("plume_ml/plume_ml"),
+    ];
+    for candidate in &resource_candidates {
+        if let Ok(canonical) = candidate.canonicalize() {
+            if canonical.exists() && canonical.is_file() {
+                return Ok(MlBackend::Bundled(canonical));
+            }
+        }
+    }
+
+    // 3. Development fallback: run python3 plume_ml.py
+    let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../python/plume_ml.py")
         .canonicalize()
-        .or_else(|_| {
-            // Try dev path
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../python/plume_ml.py")
-                .canonicalize()
-                .map_err(|e| format!("Cannot find plume_ml.py: {}", e))
-        })?;
+        .map_err(|e| format!("Cannot find plume_ml.py: {}", e))?;
 
-    // Try to find python3 — bundled .app doesn't inherit the user's shell PATH
     let python = find_python3();
+    Ok(MlBackend::PythonScript { python, script })
+}
 
-    let mut child = Command::new(&python)
-        .arg(&python_script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to start Python (tried '{}'): {}", python, e))?;
+pub fn run_ml_command(command: serde_json::Value) -> Result<serde_json::Value, String> {
+    let backend = resolve_backend()?;
+
+    let mut child = match &backend {
+        MlBackend::Bundled(path) => Command::new(path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start bundled plume_ml ('{}'): {}", path.display(), e))?,
+        MlBackend::PythonScript { python, script } => Command::new(python)
+            .arg(script)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Failed to start Python (tried '{}'): {}", python, e))?,
+    };
 
     let mut stdin = child.stdin.take().ok_or("Failed to open stdin")?;
     let stdout = child.stdout.take().ok_or("Failed to open stdout")?;
@@ -56,7 +95,7 @@ pub fn run_ml_command(command: serde_json::Value) -> Result<serde_json::Value, S
     stdin
         .write_all(format!("{}\n", cmd_str).as_bytes())
         .map_err(|e| format!("Write error: {}", e))?;
-    drop(stdin); // Close stdin so Python knows to process and exit
+    drop(stdin); // Close stdin so the sidecar knows to process and exit
 
     let reader = BufReader::new(stdout);
     let mut result_line = String::new();
@@ -81,11 +120,11 @@ pub fn run_ml_command(command: serde_json::Value) -> Result<serde_json::Value, S
                 return Err(err_lines.join("\n"));
             }
         }
-        return Err("No response from Python".to_string());
+        return Err("No response from ML sidecar".to_string());
     }
 
     let result: serde_json::Value = serde_json::from_str(&result_line)
-        .map_err(|e| format!("Failed to parse Python response: {} — raw: {}", e, result_line))?;
+        .map_err(|e| format!("Failed to parse sidecar response: {} — raw: {}", e, result_line))?;
 
     if let Some(err) = result.get("error") {
         return Err(err.as_str().unwrap_or("Unknown error").to_string());

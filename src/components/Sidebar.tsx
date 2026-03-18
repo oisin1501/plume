@@ -21,7 +21,7 @@ export function Sidebar() {
     const file = await open({
       multiple: false,
       filters: [
-        { name: "Data files", extensions: ["csv", "tsv", "parquet"] },
+        { name: "Data files", extensions: ["csv", "tsv", "parquet", "xlsx", "xls"] },
       ],
     });
     if (file) {
