@@ -36,18 +36,22 @@ fn resolve_backend() -> Result<MlBackend, String> {
         .ok_or("No parent dir")?
         .to_path_buf();
 
-    // 1. Check for bundled binary next to the app executable (production — onefile)
-    let bundled = exe_dir.join("plume_ml");
+    // Platform-specific binary name
+    let bin_name = if cfg!(target_os = "windows") { "plume_ml.exe" } else { "plume_ml" };
+
+    // 1. Check for bundled binary next to the app executable (production)
+    let bundled = exe_dir.join(bin_name);
     if bundled.exists() && bundled.is_file() {
         return Ok(MlBackend::Bundled(bundled));
     }
 
-    // 2. Check Tauri resource dir for onedir bundle (production — macOS .app)
-    //    Resources are copied to Contents/Resources/ in the .app bundle
+    // 2. Check resource directories (varies by platform)
     let resource_candidates = [
-        exe_dir.join("../Resources/plume_ml/plume_ml"),
-        exe_dir.join("../Resources/plume_ml"),
-        exe_dir.join("plume_ml/plume_ml"),
+        // macOS .app bundle: Contents/Resources/plume_ml/plume_ml
+        exe_dir.join("../Resources/plume_ml").join(bin_name),
+        exe_dir.join("../Resources").join(bin_name),
+        // Windows/Linux: plume_ml/ next to executable
+        exe_dir.join("plume_ml").join(bin_name),
     ];
     for candidate in &resource_candidates {
         if let Ok(canonical) = candidate.canonicalize() {

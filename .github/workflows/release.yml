@@ -1,0 +1,69 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies and PyInstaller
+        run: pip install numpy pandas scikit-learn xgboost lightgbm shap pyinstaller
+
+      - name: Bundle Python sidecar
+        shell: bash
+        run: |
+          cd python
+          pyinstaller --onedir --name plume_ml -y plume_ml.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Plume ${{ github.ref_name }}'
+          releaseBody: |
+            ## Plume ${{ github.ref_name }}
+
+            No-code ML desktop app. Download the installer for your platform below.
+
+            ### Installation
+            - **macOS**: Download the `.dmg`, open it, drag Plume to Applications. Right-click → Open on first launch.
+            - **Windows**: Download the `.msi` installer and run it.
+            - No Python or packages needed — everything is bundled.
+          releaseDraft: false
+          prerelease: false
