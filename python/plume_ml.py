@@ -72,6 +72,19 @@ def prepare_features(df, features, target=None):
             else:
                 y = y.fillna(y_median)
 
+    # Replace inf/-inf with NaN, then fill remaining NaNs
+    X = X.replace([np.inf, -np.inf], np.nan)
+    for col in X.columns:
+        if X[col].isna().any():
+            col_median = X[col].median()
+            X[col] = X[col].fillna(0 if pd.isna(col_median) else col_median)
+
+    if y is not None and hasattr(y, 'replace'):
+        y = pd.Series(y).replace([np.inf, -np.inf], np.nan)
+        y_median = y.median()
+        y = y.fillna(0 if pd.isna(y_median) else y_median)
+        y = y.values
+
     return X, y, encoders, target_encoder
 
 
