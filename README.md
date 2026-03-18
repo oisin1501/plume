@@ -1,73 +1,81 @@
-# React + TypeScript + Vite
+# Plume
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**No-code machine learning for everyone.**
 
-Currently, two official plugins are available:
+Plume is a free, open-source desktop app that lets anyone build, train, and evaluate machine learning models — without writing a single line of code. No Python. No setup. Just download, open, and start.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Why Plume?
 
-## React Compiler
+Most ML tools assume you already know what you're doing. They're either expensive enterprise software (JMP, SPSS, SAS) or require coding skills (Python, R). That leaves millions of people — analysts, students, researchers, small business owners — locked out of powerful analysis because they "don't know how to code."
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Plume changes that. It's lightweight, intuitive, and explains everything in plain language.
 
-## Expanding the ESLint configuration
+## What you can do
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+**Import your data**
+Load CSV, Excel (.xlsx), or Parquet files. Drag and drop or browse. Plume auto-detects separators, column types, and data issues.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+**Explore and clean it**
+See column profiles, distributions, and missing values at a glance. Fill gaps, cast types, rename or drop columns, one-hot encode categoricals — all with one click. Undo anything.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+**Engineer features**
+Combine columns (add, subtract, multiply, divide), apply transforms (log, sqrt, z-score, normalize), or bin numeric columns into groups. No formulas to write.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+**Visualize patterns**
+Histograms, scatter plots, correlation heatmaps, and box plots — pick your columns and see the chart instantly.
+
+**Train models**
+Choose a task (classify, predict a number, or find groups), pick a target, select features, and hit Train. Plume supports Random Forest, XGBoost, LightGBM, Logistic/Linear Regression, K-Means, and DBSCAN. Tune hyperparameters with sliders. Run cross-validation. Compare all algorithms side by side.
+
+**Understand results**
+Every result comes with a plain-English summary: *"Your model correctly identifies 87% of cases. The most important factors are age, income, and region."* Metrics have hover explanations. Quality is color-coded (strong / reasonable / needs work). SHAP values explain individual predictions.
+
+**Export everything**
+Save predictions as CSV, export the trained model as a pickle file, or generate an HTML summary report.
+
+## Install
+
+### macOS (Apple Silicon)
+1. Download `Plume-v1.0.0-macOS-Apple-Silicon.dmg` from [Releases](https://github.com/oisin1501/plume/releases)
+2. Open the DMG, drag Plume to Applications
+3. First launch: right-click Plume.app, click **Open**, then **Open** again (one-time Gatekeeper bypass — the app is not code-signed yet)
+
+### Windows
+1. Download the `.msi` installer from [Releases](https://github.com/oisin1501/plume/releases)
+2. Run the installer
+
+**No Python or packages needed** — everything is bundled inside the app.
+
+## Built with
+
+- [Tauri](https://tauri.app) — lightweight desktop framework (Rust backend, web frontend)
+- [React](https://react.dev) + [TypeScript](https://www.typescriptlang.org) — UI
+- [Polars](https://pola.rs) — high-performance data processing in Rust
+- [scikit-learn](https://scikit-learn.org), [XGBoost](https://xgboost.ai), [LightGBM](https://lightgbm.readthedocs.io) — ML algorithms
+- [Recharts](https://recharts.org) — visualizations
+- [Tailwind CSS](https://tailwindcss.com) — styling
+
+## Development
+
+```bash
+# Prerequisites: Node.js 20+, Rust, Python 3.12+
+
+# Install dependencies
+npm install
+pip install numpy pandas scikit-learn xgboost lightgbm shap
+
+# Run in development mode
+npx @tauri-apps/cli dev
+
+# Build for production
+cd python && pyinstaller --onedir --name plume_ml -y plume_ml.py && cd ..
+npx @tauri-apps/cli build
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## License
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+MIT
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## Contributing
+
+Plume is in its early days. If you're interested in contributing, open an issue or start a discussion. We'd love to hear from you.
