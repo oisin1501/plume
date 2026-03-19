@@ -7,7 +7,7 @@ What's built and working:
 - [x] CSV import with auto-separator detection (comma, tab, pipe, semicolon)
 - [x] Parquet import support
 - [x] Data table view with pagination and column profiling
-- [x] Column distribution charts (histogram for numeric, frequency for categorical)
+- [x] Column distribution charts (histogram for numeric, frequency for categorical) with hover showing count and % of total
 - [x] First/Last page navigation and horizontal column scroll buttons
 - [x] Column sorting (click header to sort asc/desc)
 - [x] Column filtering (search/filter rows by value in profile dropdown)
@@ -16,13 +16,17 @@ What's built and working:
 - [x] One-hot encoding action for categorical columns
 - [x] Rename column action
 - [x] Data type change recommendations with batch "Convert all" action
+- [x] Expandable type recommendations banner — click to see individual columns, convert one at a time or all at once
 - [x] Model screen: task selection (classification/regression/clustering), target/feature selection, algorithm picker, training via Python sidecar
 - [x] Target column recommendations based on task type (dismissible)
 - [x] Feature validation — warns on ID-like high-cardinality columns
 - [x] Hyperparameter tuning UI per algorithm (trees, depth, learning rate, etc.)
 - [x] Cross-validation option with configurable folds and per-fold score visualization
+- [x] Plain-English explanation for cross-validation option (what it does, why it helps)
+- [x] Type filter chips in Model tab — filter target and feature columns by data type (Text, Decimal, Integer, Boolean)
 - [x] Model comparison — "Compare all" trains every algorithm for the task and shows results side by side
 - [x] Comparison summary table (Compare/Details tabs) with best-model highlighting, all metrics, CV scores, and feature counts
+- [x] Shared feature importance on Compare screen — shows features agreed upon across models with average importance
 - [x] Results screen: headline metric, feature importance bars, confusion matrix, cluster summaries
 - [x] Multiple training results stored and selectable for comparison
 - [x] ROC curve visualization for classification (with AUC score)
@@ -37,7 +41,7 @@ What's built and working:
 - [x] App icon (Simurgh bird)
 - [x] Load new file after one is already loaded (full state reset)
 - [x] Python sidecar resolves correct python3 path in bundled .app
-- [x] Drag-and-drop via Tauri native event (with file type validation)
+- [x] Drag-and-drop via Tauri native event (with file type validation) — works app-wide, even with a dataset already loaded
 - [x] Empty/invalid CSV validation (rejects empty files, no-column files)
 - [x] Graceful training failure handling (in-UI errors, partial compare-all support, input validation)
 - [x] Python training input validation (min rows, min classes, feature check)
@@ -57,8 +61,15 @@ What's built and working:
 - [x] Plain-language result explanations:
   - [x] Auto-generated summary with accuracy/R²/cluster count and top features
   - [x] Color-coded quality assessment (strong/reasonable/struggling)
-  - [x] Metric tooltips (hover "?" for explanation of accuracy, precision, R², etc.)
+  - [x] Metric tooltips — styled popover on hover/click with plain-English definition for every metric (Accuracy, Precision, Recall, F1, R², MAE, RMSE, Silhouette, etc.)
   - [x] Contextual explanations for feature importance, confusion matrix, and ROC curves
+  - [x] Overfitting detection — warns when training accuracy >> test accuracy with plain-English explanation and suggestions
+  - [x] SHAP "What does this mean?" — plain-English explanation per prediction card showing which features pushed higher/lower
+- [x] Tune & Retrain from Results tab — edit hyperparameters and retrain without leaving the results view, new result added for comparison
+- [x] Resizable charts — S/M/L toggle on all charts (Visualize tab + Results tab) for histogram, scatter, box plot, ROC, residuals, cluster scatter
+- [x] Branded title bar — "Plume · filename.csv · N rows" with contextual info
+- [x] Contextual suggestions in Shape tab — actionable hints for missing values, low cardinality, one-hot candidates, constant columns, and high-cardinality text. Dismissible per column.
+- [x] Smart defaults — auto-select all non-ID features when a target is chosen; auto-select for clustering
 
 ---
 

@@ -80,6 +80,7 @@ export interface TrainResult {
   target?: string | null;
   hyperparams?: Record<string, any>;
   metrics: Record<string, any>;
+  train_metrics?: Record<string, number>;
   feature_importance?: { feature: string; importance: number }[];
   clusters?: { cluster: number; size: number; characteristics: string[] }[];
   features_used?: string[];

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
   ScatterChart, Scatter, ResponsiveContainer, ReferenceLine,
@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "../stores/appStore";
 import type { TrainResult } from "../types/data";
+import { ChartSizeToggle, useChartSize } from "./ChartSizeToggle";
 
 const METRIC_EXPLANATIONS: Record<string, string> = {
   Accuracy: "The percentage of predictions that were correct",
@@ -41,6 +42,7 @@ export function ResultsView() {
   const trainingResults = useAppStore((s) => s.trainingResults);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [tab, setTab] = useState<ResultTab>("summary");
+  const [chartHeight, chartSize, setChartSize] = useChartSize("M");
 
   if (!summary || trainingResults.length === 0) {
     return (
@@ -206,6 +208,38 @@ export function ResultsView() {
             )}
           </div>
 
+          {/* Overfitting warning */}
+          {result.train_metrics && (() => {
+            const trainScore = isClassification
+              ? result.train_metrics!.accuracy
+              : isRegression
+                ? result.train_metrics!.r2
+                : null;
+            const testScore = isClassification
+              ? result.metrics.accuracy
+              : isRegression
+                ? result.metrics.r2
+                : null;
+            if (trainScore == null || testScore == null) return null;
+            const gap = trainScore - testScore;
+            if (gap < 0.1) return null;
+            const trainPct = (trainScore * 100).toFixed(0);
+            const testPct = (testScore * 100).toFixed(0);
+            const metric = isClassification ? "accuracy" : "R²";
+            return (
+              <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-700 rounded-[var(--radius-default)] px-4 py-3">
+                <p className="text-[12px] font-medium text-amber-700 dark:text-amber-400 mb-1">
+                  Possible overfitting detected
+                </p>
+                <p className="text-[12px] text-amber-700/80 dark:text-amber-300/80 leading-relaxed">
+                  Your model scores {trainPct}% {metric} on training data but only {testPct}% on new data.
+                  This suggests the model memorized the training examples rather than learning general patterns.
+                  Try reducing model complexity (fewer trees, shallower depth) or adding more data.
+                </p>
+              </div>
+            );
+          })()}
+
           {/* Metrics */}
           <div>
             <h3 className="text-[12px] text-text-secondary mb-3">Metrics</h3>
@@ -311,11 +345,14 @@ export function ResultsView() {
           {/* ROC Curve (classification) */}
           {isClassification && result.roc_curve && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-1">
-                ROC Curve{result.roc_curve.auc != null && ` (AUC = ${result.roc_curve.auc.toFixed(3)})`}
-              </h3>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-[12px] text-text-secondary">
+                  ROC Curve{result.roc_curve.auc != null && ` (AUC = ${result.roc_curve.auc.toFixed(3)})`}
+                </h3>
+                <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+              </div>
               <p className="text-[11px] text-text-tertiary mb-3">The closer the curve is to the top-left corner, the better the model. The diagonal line represents random guessing.</p>
-              <ResponsiveContainer width="100%" height={260}>
+              <ResponsiveContainer width="100%" height={chartHeight}>
                 <LineChart
                   data={result.roc_curve.fpr.map((fpr, i) => ({
                     fpr,
@@ -362,8 +399,11 @@ export function ResultsView() {
           {/* Residual Plot (regression) */}
           {isRegression && result.residuals && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-3">Residual Plot</h3>
-              <ResponsiveContainer width="100%" height={260}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-[12px] text-text-secondary">Residual Plot</h3>
+                <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+              </div>
+              <ResponsiveContainer width="100%" height={chartHeight}>
                 <ScatterChart margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
@@ -402,10 +442,13 @@ export function ResultsView() {
           {/* Cluster Scatter Plot */}
           {isClustering && result.scatter && (
             <div>
-              <h3 className="text-[12px] text-text-secondary mb-3">
-                Cluster Scatter (PCA — {result.scatter.explained_variance.map((v) => `${(v * 100).toFixed(0)}%`).join(" + ")} variance)
-              </h3>
-              <ResponsiveContainer width="100%" height={300}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-[12px] text-text-secondary">
+                  Cluster Scatter (PCA — {result.scatter.explained_variance.map((v) => `${(v * 100).toFixed(0)}%`).join(" + ")} variance)
+                </h3>
+                <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+              </div>
+              <ResponsiveContainer width="100%" height={chartHeight}>
                 <ScatterChart margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
@@ -506,6 +549,7 @@ export function ResultsView() {
             {result.task !== "clustering" && (
               <ShapButton result={result} />
             )}
+            <RetrainPanel result={result} onRetrained={() => setSelectedIdx(0)} />
           </div>
         </motion.div>
           </>
@@ -526,6 +570,7 @@ function ComparisonTable({
   const isClassification = taskType === "classification";
   const isRegression = taskType === "regression";
   const isClustering = taskType === "clustering";
+  const [chartHeight, chartSize, setChartSize] = useChartSize("M");
 
   // Find best result for highlighting
   const getBestIdx = () => {
@@ -667,9 +712,12 @@ function ComparisonTable({
       {/* Combined ROC curve overlay (classification only) */}
       {isClassification && results.some((r) => r.roc_curve) && (
         <div className="mt-6">
-          <h3 className="text-[12px] text-text-secondary mb-1">ROC Curves</h3>
+          <div className="flex items-center justify-between mb-1">
+            <h3 className="text-[12px] text-text-secondary">ROC Curves</h3>
+            <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+          </div>
           <p className="text-[11px] text-text-tertiary mb-3">The closer the curve is to the top-left corner, the better the model. The diagonal line represents random guessing.</p>
-          <ResponsiveContainer width="100%" height={300}>
+          <ResponsiveContainer width="100%" height={chartHeight}>
             <LineChart margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
@@ -746,22 +794,104 @@ function ComparisonTable({
           Features: {results[0].features_used.join(", ")}
         </p>
       )}
+
+      {/* Shared top features across models */}
+      {results.some((r) => r.feature_importance && r.feature_importance.length > 0) && (
+        <SharedFeatureImportance results={results} />
+      )}
     </motion.div>
+  );
+}
+
+function SharedFeatureImportance({ results }: { results: import("../types/data").TrainResult[] }) {
+  // Collect feature importance across all models, averaging the normalized rank
+  const modelsWithImportance = results.filter((r) => r.feature_importance && r.feature_importance.length > 0);
+  if (modelsWithImportance.length < 2) return null;
+
+  // For each model, get top 10 features. Score each feature by its average normalized importance across models.
+  const featureScores = new Map<string, { totalImportance: number; modelCount: number }>();
+
+  for (const r of modelsWithImportance) {
+    const fi = r.feature_importance!;
+    const maxImp = fi[0]?.importance ?? 1;
+    for (const f of fi.slice(0, 10)) {
+      const normalized = maxImp > 0 ? f.importance / maxImp : 0;
+      const existing = featureScores.get(f.feature) ?? { totalImportance: 0, modelCount: 0 };
+      existing.totalImportance += normalized;
+      existing.modelCount += 1;
+      featureScores.set(f.feature, existing);
+    }
+  }
+
+  // Only show features that appear in at least 2 models
+  const shared = Array.from(featureScores.entries())
+    .filter(([, v]) => v.modelCount >= 2)
+    .map(([feature, v]) => ({
+      feature,
+      avgImportance: v.totalImportance / modelsWithImportance.length,
+      agreedBy: v.modelCount,
+    }))
+    .sort((a, b) => b.avgImportance - a.avgImportance)
+    .slice(0, 10);
+
+  if (shared.length === 0) return null;
+  const maxAvg = shared[0].avgImportance;
+
+  return (
+    <div className="mt-6">
+      <h3 className="text-[12px] text-text-secondary mb-1">Features agreed upon across models</h3>
+      <p className="text-[11px] text-text-tertiary mb-3">
+        These features were ranked as important by multiple models. The bar shows average relative importance.
+      </p>
+      <div className="flex flex-col gap-2">
+        {shared.map((f, i) => {
+          const pct = maxAvg > 0 ? (f.avgImportance / maxAvg) * 100 : 0;
+          return (
+            <div key={f.feature} className="flex items-center gap-3">
+              <span className="text-[12px] text-text-secondary w-[140px] text-right truncate shrink-0">
+                {f.feature}
+              </span>
+              <div className="flex-1 h-[6px] bg-border rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${pct}%` }}
+                  transition={{ duration: 0.4, delay: i * 0.05, ease: "easeOut" }}
+                  className="h-full bg-plume-500 rounded-full"
+                />
+              </div>
+              <span className="text-[10px] text-text-tertiary w-[60px] shrink-0">
+                {f.agreedBy}/{modelsWithImportance.length} models
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {
   const explanation = METRIC_EXPLANATIONS[label];
+  const [showTooltip, setShowTooltip] = useState(false);
   return (
     <div className="p-3 border border-border rounded-[var(--radius-default)]">
       <p className="text-[11px] text-text-tertiary mb-1">
         {label}
         {explanation && (
-          <span
-            className="ml-1 text-text-tertiary/60 cursor-help"
-            title={explanation}
-          >
-            ?
+          <span className="relative inline-block ml-1">
+            <span
+              className="text-text-tertiary/60 cursor-help hover:text-plume-500 transition-colors duration-150"
+              onMouseEnter={() => setShowTooltip(true)}
+              onMouseLeave={() => setShowTooltip(false)}
+              onClick={() => setShowTooltip(!showTooltip)}
+            >
+              ?
+            </span>
+            {showTooltip && (
+              <span className="absolute z-10 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-[220px] px-3 py-2 text-[11px] leading-relaxed text-text-primary bg-surface border border-border rounded-[var(--radius-default)] shadow-md pointer-events-none">
+                {explanation}
+              </span>
+            )}
           </span>
         )}
       </p>
@@ -927,31 +1057,64 @@ function ShapButton({ result }: { result: TrainResult }) {
   if (explanations) {
     return (
       <div className="w-full mt-4">
-        <h3 className="text-[12px] text-text-secondary mb-3">SHAP Explanations (sample predictions)</h3>
+        <h3 className="text-[12px] text-text-secondary mb-1">SHAP Explanations (sample predictions)</h3>
+        <p className="text-[11px] text-text-tertiary mb-3">
+          Each card shows one prediction and the factors that influenced it most.
+          Green bars pushed the prediction higher; red bars pushed it lower. Longer bars = stronger influence.
+        </p>
         <div className="flex flex-col gap-4">
-          {explanations.map((exp, i) => (
-            <div key={i} className="p-3 border border-border rounded-[var(--radius-default)]">
-              <p className="text-[12px] font-medium text-text-primary mb-2">
-                Prediction: {exp.prediction}
-              </p>
-              <div className="flex flex-col gap-1">
-                {exp.contributions.slice(0, 6).map((c) => (
-                  <div key={c.feature} className="flex items-center gap-2 text-[11px]">
-                    <span className="w-[100px] text-right text-text-secondary truncate shrink-0">{c.feature}</span>
-                    <div className="flex-1 flex items-center">
-                      <div
-                        className={`h-[4px] rounded-full ${c.shap_value >= 0 ? "bg-emerald-400" : "bg-red-400"}`}
-                        style={{ width: `${Math.min(Math.abs(c.shap_value) * 200, 100)}%` }}
-                      />
+          {explanations.map((exp, i) => {
+            const topPositive = exp.contributions.filter((c) => c.shap_value > 0).slice(0, 2);
+            const topNegative = exp.contributions.filter((c) => c.shap_value < 0).slice(0, 2);
+            return (
+              <div key={i} className="p-3 border border-border rounded-[var(--radius-default)]">
+                <p className="text-[12px] font-medium text-text-primary mb-2">
+                  Prediction: {exp.prediction}
+                </p>
+                <div className="flex flex-col gap-1">
+                  {exp.contributions.slice(0, 6).map((c) => (
+                    <div key={c.feature} className="flex items-center gap-2 text-[11px]">
+                      <span className="w-[100px] text-right text-text-secondary truncate shrink-0">{c.feature}</span>
+                      <div className="flex-1 flex items-center">
+                        <div
+                          className={`h-[4px] rounded-full ${c.shap_value >= 0 ? "bg-emerald-400" : "bg-red-400"}`}
+                          style={{ width: `${Math.min(Math.abs(c.shap_value) * 200, 100)}%` }}
+                        />
+                      </div>
+                      <span className={`w-[50px] text-right tabular-nums ${c.shap_value >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                        {c.shap_value > 0 ? "+" : ""}{c.shap_value.toFixed(3)}
+                      </span>
                     </div>
-                    <span className={`w-[50px] text-right tabular-nums ${c.shap_value >= 0 ? "text-emerald-600" : "text-red-500"}`}>
-                      {c.shap_value > 0 ? "+" : ""}{c.shap_value.toFixed(3)}
-                    </span>
-                  </div>
-                ))}
+                  ))}
+                </div>
+                {/* Plain-English explanation */}
+                <div className="mt-2 pt-2 border-t border-border/50">
+                  <p className="text-[11px] text-text-secondary leading-relaxed">
+                    <span className="font-medium">What does this mean?</span>{" "}
+                    {topPositive.length > 0 && (
+                      <>
+                        {topPositive.map((c) => (
+                          <span key={c.feature}><span className="font-medium text-emerald-600 dark:text-emerald-400">{c.feature}</span> (value: {c.value})</span>
+                        )).reduce<React.ReactNode[]>((acc, el, idx) => idx === 0 ? [el] : [...acc, " and ", el], [])}
+                        {" "}pushed the prediction <span className="text-emerald-600 dark:text-emerald-400">higher</span>.{" "}
+                      </>
+                    )}
+                    {topNegative.length > 0 && (
+                      <>
+                        {topNegative.map((c) => (
+                          <span key={c.feature}><span className="font-medium text-red-500 dark:text-red-400">{c.feature}</span> (value: {c.value})</span>
+                        )).reduce<React.ReactNode[]>((acc, el, idx) => idx === 0 ? [el] : [...acc, " and ", el], [])}
+                        {" "}pushed it <span className="text-red-500 dark:text-red-400">lower</span>.
+                      </>
+                    )}
+                    {topPositive.length === 0 && topNegative.length === 0 && (
+                      <>No single feature had a strong influence on this prediction.</>
+                    )}
+                  </p>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     );
@@ -968,6 +1131,218 @@ function ShapButton({ result }: { result: TrainResult }) {
       </button>
       {error && <span className="text-[11px] text-red-500">{error}</span>}
     </div>
+  );
+}
+
+const HYPERPARAM_DEFS: Record<string, { key: string; label: string; default: number; min: number; max: number; step: number }[]> = {
+  random_forest: [
+    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 0, min: 0, max: 100, step: 1 },
+    { key: "min_samples_split", label: "Min samples to split", default: 2, min: 2, max: 50, step: 1 },
+  ],
+  logistic_regression: [
+    { key: "C", label: "Regularization (C)", default: 1.0, min: 0.01, max: 100, step: 0.1 },
+    { key: "max_iter", label: "Max iterations", default: 1000, min: 100, max: 10000, step: 100 },
+  ],
+  linear_regression: [],
+  xgboost: [
+    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 6, min: 0, max: 20, step: 1 },
+    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+  ],
+  lightgbm: [
+    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", default: -1, min: -1, max: 50, step: 1 },
+    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+    { key: "num_leaves", label: "Num leaves", default: 31, min: 2, max: 256, step: 1 },
+  ],
+};
+
+function RetrainPanel({ result, onRetrained }: { result: TrainResult; onRetrained: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [retrainResult, setRetrainResult] = useState<TrainResult | null>(null);
+  // Capture the original result at first render so comparisons stay stable after selectedIdx changes
+  const [originalResult] = useState<TrainResult>(result);
+  const addTrainingResult = useAppStore((s) => s.addTrainingResult);
+  const defs = HYPERPARAM_DEFS[originalResult.algorithm] ?? [];
+
+  // Initialize from the original result's hyperparams
+  const [hp, setHp] = useState<Record<string, number>>(() => {
+    const initial: Record<string, number> = {};
+    for (const def of defs) {
+      initial[def.key] = originalResult.hyperparams?.[def.key] ?? def.default;
+    }
+    return initial;
+  });
+
+  if (defs.length === 0) return null;
+
+  const handleRetrain = async () => {
+    setTraining(true);
+    setRetrainResult(null);
+    try {
+      const built: Record<string, number> = {};
+      for (const def of defs) {
+        built[def.key] = hp[def.key] ?? def.default;
+      }
+      const newResult = await invoke<TrainResult>("train_model", {
+        task: originalResult.task,
+        target: originalResult.target ?? null,
+        features: originalResult.features_used ?? [],
+        algorithm: originalResult.algorithm,
+        nClusters: null,
+        hyperparams: built,
+        useCv: !!originalResult.cv_scores,
+        cvFolds: originalResult.cv_scores?.folds ?? 5,
+      });
+      newResult.target = originalResult.target;
+      newResult.hyperparams = built;
+      addTrainingResult(newResult);
+      setRetrainResult(newResult);
+      onRetrained();
+    } catch (err) {
+      console.error("Retrain failed:", err);
+    } finally {
+      setTraining(false);
+    }
+  };
+
+  // Build the metric comparison rows — always compare against the original result
+  const getComparisonMetrics = (): { label: string; oldVal: number; newVal: number; format: (v: number) => string; higherIsBetter: boolean }[] => {
+    if (!retrainResult) return [];
+    const isClassification = originalResult.task === "classification";
+    const isRegression = originalResult.task === "regression";
+    const pctFmt = (v: number) => `${(v * 100).toFixed(1)}%`;
+    const decFmt = (v: number) => v.toFixed(3);
+
+    if (isClassification) {
+      return [
+        { label: "Accuracy", oldVal: originalResult.metrics.accuracy, newVal: retrainResult.metrics.accuracy, format: pctFmt, higherIsBetter: true },
+        { label: "Precision", oldVal: originalResult.metrics.precision, newVal: retrainResult.metrics.precision, format: pctFmt, higherIsBetter: true },
+        { label: "Recall", oldVal: originalResult.metrics.recall, newVal: retrainResult.metrics.recall, format: pctFmt, higherIsBetter: true },
+        { label: "F1", oldVal: originalResult.metrics.f1, newVal: retrainResult.metrics.f1, format: pctFmt, higherIsBetter: true },
+      ];
+    }
+    if (isRegression) {
+      return [
+        { label: "R²", oldVal: originalResult.metrics.r2, newVal: retrainResult.metrics.r2, format: decFmt, higherIsBetter: true },
+        { label: "MAE", oldVal: originalResult.metrics.mae, newVal: retrainResult.metrics.mae, format: decFmt, higherIsBetter: false },
+        { label: "RMSE", oldVal: originalResult.metrics.rmse, newVal: retrainResult.metrics.rmse, format: decFmt, higherIsBetter: false },
+      ];
+    }
+    return [];
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(!open)}
+        className={`px-4 py-2 text-[12px] rounded-[var(--radius-default)] border transition-colors duration-200 cursor-pointer ${
+          open
+            ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
+            : "border-border text-text-secondary hover:bg-surface-alt hover:text-text-primary"
+        }`}
+      >
+        Tune & Retrain
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="w-full overflow-hidden"
+          >
+            <div className="p-4 border border-border rounded-[var(--radius-default)] bg-surface-alt mt-2">
+              <p className="text-[11px] text-text-tertiary mb-3">
+                Adjust the hyperparameters below and retrain with the same features and target.
+                The new result will appear alongside your existing results for easy comparison.
+              </p>
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                {defs.map((def) => (
+                  <div key={def.key} className="flex flex-col gap-1">
+                    <label className="text-[10px] text-text-tertiary">{def.label}</label>
+                    <input
+                      type="number"
+                      min={def.min}
+                      max={def.max}
+                      step={def.step}
+                      value={hp[def.key] ?? def.default}
+                      onChange={(e) =>
+                        setHp((prev) => ({
+                          ...prev,
+                          [def.key]: parseFloat(e.target.value) || def.default,
+                        }))
+                      }
+                      className="w-full px-2 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200 tabular-nums"
+                    />
+                  </div>
+                ))}
+              </div>
+              <button
+                onClick={handleRetrain}
+                disabled={training}
+                className="px-5 py-2 text-[12px] font-medium rounded-[var(--radius-default)] bg-plume-600 text-white hover:bg-plume-700 disabled:opacity-50 transition-colors duration-200 cursor-pointer"
+              >
+                {training ? (
+                  <span className="flex items-center gap-2">
+                    <motion.span
+                      className="inline-block w-2 h-2 rounded-full bg-white/60"
+                      animate={{ scale: [1, 1.3, 1] }}
+                      transition={{ duration: 1, repeat: Infinity }}
+                    />
+                    Retraining...
+                  </span>
+                ) : (
+                  `Retrain ${ALGO_LABELS[originalResult.algorithm] ?? originalResult.algorithm}`
+                )}
+              </button>
+
+              {/* Before/after comparison */}
+              {retrainResult && (
+                <motion.div
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.25 }}
+                  className="mt-4 pt-4 border-t border-border"
+                >
+                  <h4 className="text-[11px] font-medium text-text-secondary mb-2">Performance comparison</h4>
+                  <div className="flex flex-col gap-1.5">
+                    {getComparisonMetrics().map((m) => {
+                      const diff = m.newVal - m.oldVal;
+                      const improved = m.higherIsBetter ? diff > 0 : diff < 0;
+                      const unchanged = Math.abs(diff) < 0.0001;
+                      const diffStr = m.label === "R²" || m.label === "MAE" || m.label === "RMSE"
+                        ? `${diff > 0 ? "+" : ""}${diff.toFixed(3)}`
+                        : `${diff > 0 ? "+" : ""}${(diff * 100).toFixed(1)}%`;
+                      return (
+                        <div key={m.label} className="flex items-center gap-2 text-[12px]">
+                          <span className="w-[70px] text-text-tertiary text-right shrink-0">{m.label}</span>
+                          <span className="text-text-secondary tabular-nums">{m.format(m.oldVal)}</span>
+                          <span className="text-text-tertiary">→</span>
+                          <span className="text-text-primary font-medium tabular-nums">{m.format(m.newVal)}</span>
+                          <span className={`text-[11px] tabular-nums font-medium ${
+                            unchanged
+                              ? "text-text-tertiary"
+                              : improved
+                                ? "text-emerald-600 dark:text-emerald-400"
+                                : "text-red-500 dark:text-red-400"
+                          }`}>
+                            {unchanged ? "—" : `${improved ? "↑" : "↓"} ${diffStr}`}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </motion.div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 

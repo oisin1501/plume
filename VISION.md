@@ -11,11 +11,11 @@ Plume exists because powerful analysis shouldn't require a CS degree or an enter
 ## Where We Are (v1.0.0)
 
 A working desktop app that covers the full ML pipeline:
-- Import data (CSV, Parquet)
+- Import data (CSV, Parquet, Excel)
 - Explore and clean it (profiling, type casting, missing values, feature engineering)
-- Visualize it (histogram, scatter, correlation, box plot)
+- Visualize it (histogram, scatter, correlation, box plot — all resizable)
 - Train models (classification, regression, clustering across 12+ algorithms)
-- Evaluate results (metrics, ROC curves, residual plots, SHAP, model comparison)
+- Evaluate results (metrics with plain-English tooltips, ROC curves, residual plots, SHAP, model comparison, overfitting detection)
 - Export (predictions, models, reports)
 
 ### Honest assessment of v1
@@ -59,11 +59,13 @@ An app that a small business owner, a teacher, a student, or a nurse can downloa
 - [x] Auto-generated plain-English summary after training with top features
 - [x] Color-coded quality assessment (strong/reasonable/struggling)
 - [x] Contextual explanations for feature importance, confusion matrix, and ROC curves
-- [ ] Add "What does this mean?" expandable sections for SHAP values
-- [ ] Contextual suggestions in Shape tab: "This column has 40% missing values — consider dropping it or filling with the average"
-- [ ] Overfitting detection: warn when training accuracy >> test accuracy
+- [x] Add "What does this mean?" expandable sections for SHAP values
+- [x] Contextual suggestions in Shape tab: "This column has 40% missing values — consider dropping it or filling with the average"
+- [x] Overfitting detection: warn when training accuracy >> test accuracy
+- [x] Styled metric tooltips — popover on hover/click with plain-English definitions
+- [x] Plain-English cross-validation explanation in Model tab
 
-**Success criteria:** Mostly met. A non-technical user can understand their results in plain English.
+**Success criteria:** ✓ Met. A non-technical user can understand their results in plain English, gets contextual guidance on data quality, and is warned about overfitting.
 
 ### Phase 3: Guided experience
 **Goal:** The app guides first-time users through the workflow.
@@ -102,14 +104,14 @@ An app that a small business owner, a teacher, a student, or a nurse can downloa
 ### Phase 6: Excel import & quality of life
 **Goal:** Meet users where they are — most non-technical people use Excel.
 
-- [ ] Support .xlsx and .xls import
+- [x] Support .xlsx and .xls import
 - [ ] Auto-save and restore sessions (project files)
 - [ ] Undo across the entire session (not just within Shape tab)
 - [ ] Keyboard shortcuts for common actions
 - [ ] Drag-and-drop columns to reorder
 - [ ] Copy/paste data directly into the app
 
-**Success criteria:** A user can open their existing Excel file and start working immediately.
+**Success criteria:** Partially met. Excel import works. Session persistence and keyboard shortcuts remain.
 
 ### Phase 7: Advanced (post-v2)
 **Goal:** Grow capabilities without growing complexity.

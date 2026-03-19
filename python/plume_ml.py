@@ -206,15 +206,18 @@ def train_supervised(params):
 
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
+        y_pred_train = model.predict(X_train)
 
         # Metrics
         metrics = {}
+        train_metrics = {}
         if task == "classification":
             metrics["accuracy"] = round(accuracy_score(y_test, y_pred), 4)
             avg = "weighted" if len(set(y_test)) > 2 else "binary"
             metrics["precision"] = round(precision_score(y_test, y_pred, average=avg, zero_division=0), 4)
             metrics["recall"] = round(recall_score(y_test, y_pred, average=avg, zero_division=0), 4)
             metrics["f1"] = round(f1_score(y_test, y_pred, average=avg, zero_division=0), 4)
+            train_metrics["accuracy"] = round(accuracy_score(y_train, y_pred_train), 4)
 
             # Confusion matrix
             cm = confusion_matrix(y_test, y_pred)
@@ -227,6 +230,7 @@ def train_supervised(params):
             metrics["r2"] = round(r2_score(y_test, y_pred), 4)
             metrics["mae"] = round(mean_absolute_error(y_test, y_pred), 4)
             metrics["rmse"] = round(np.sqrt(mean_squared_error(y_test, y_pred)), 4)
+            train_metrics["r2"] = round(r2_score(y_train, y_pred_train), 4)
 
         # Feature importance
         importance = []
@@ -301,6 +305,7 @@ def train_supervised(params):
             "task": task,
             "algorithm": algo_name,
             "metrics": metrics,
+            "train_metrics": train_metrics,
             "feature_importance": importance,
             "features_used": features,
             "train_size": len(X_train),
@@ -566,19 +571,35 @@ def compute_shap(params):
                 explainer = shap.LinearExplainer(model, X_train)
 
             sample = X_test.iloc[:n_samples]
-            shap_values = explainer.shap_values(sample)
+            shap_out = explainer.shap_values(sample)
 
-            # For multiclass, shap_values is a list; take first class or average
-            if isinstance(shap_values, list):
-                shap_values = shap_values[1] if len(shap_values) == 2 else np.mean(shap_values, axis=0)
+            # Normalize shap output to a 2D numpy array (n_samples x n_features)
+            if hasattr(shap_out, 'values'):
+                # shap.Explanation object (newer SHAP versions)
+                sv_array = np.array(shap_out.values)
+            elif isinstance(shap_out, list):
+                # Multiclass: list of arrays per class
+                if len(shap_out) == 2:
+                    sv_array = np.array(shap_out[1])
+                else:
+                    sv_array = np.mean(np.array(shap_out), axis=0)
+            else:
+                sv_array = np.array(shap_out)
+
+            # If 3D (multiclass Explanation), reduce to 2D
+            if sv_array.ndim == 3:
+                if sv_array.shape[2] == 2:
+                    sv_array = sv_array[:, :, 1]
+                else:
+                    sv_array = np.mean(sv_array, axis=2)
 
             predictions = model.predict(sample)
 
             explanations = []
             for i in range(len(sample)):
-                row_shap = shap_values[i]
+                row_shap = sv_array[i]
                 contributions = []
-                for fname, sv in sorted(zip(features, row_shap), key=lambda x: -abs(x[1])):
+                for fname, sv in sorted(zip(features, row_shap), key=lambda x: -abs(float(x[1]))):
                     contributions.append({
                         "feature": fname,
                         "value": round(float(sample.iloc[i][fname]), 4),

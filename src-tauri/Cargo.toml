@@ -1,6 +1,6 @@
 [package]
 name = "plume"
-version = "0.1.0"
+version = "1.1.0"
 description = "Plume - No-code ML for everyone"
 authors = ["you"]
 license = ""

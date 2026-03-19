@@ -82,6 +82,7 @@ export function ModelView() {
   const [trainError, setTrainError] = useState<string | null>(null);
 
   const [profiles, setProfiles] = useState<ColumnProfile[]>([]);
+  const [typeFilter, setTypeFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (summary) {
@@ -96,6 +97,25 @@ export function ModelView() {
     if (!target) return columns;
     return columns.filter((c) => c !== target);
   }, [columns, target]);
+
+  // Distinct column types for the filter chips
+  const distinctTypes = useMemo(() => {
+    const types = new Set(columnTypes);
+    return Array.from(types).sort();
+  }, [columnTypes]);
+
+  // Map column name → type for quick lookup
+  const columnTypeMap = useMemo(() => {
+    const map = new Map<string, string>();
+    columns.forEach((col, i) => { map.set(col, columnTypes[i]); });
+    return map;
+  }, [columns, columnTypes]);
+
+  // Type-friendly labels
+  const typeLabel = (t: string) => {
+    const labels: Record<string, string> = { str: "Text", f64: "Decimal", i64: "Integer", bool: "Boolean", f32: "Decimal", i32: "Integer", u8: "Integer", u16: "Integer", u32: "Integer", u64: "Integer", cat: "Category" };
+    return labels[t] ?? t;
+  };
 
   // Detect ID-like columns (high cardinality relative to row count)
   const idLikeColumns = useMemo(() => {
@@ -145,21 +165,29 @@ export function ModelView() {
   const handleTaskSelect = (t: Task) => {
     setTask(t);
     setTarget(null);
-    setSelectedFeatures([]);
     setShowAdvanced(false);
     setHideRecommendations(false);
     setHyperparams({});
+    setTypeFilter(null);
     setAlgorithm(t === "clustering" ? "kmeans" : "random_forest");
+    // For clustering, auto-select all non-ID features since there's no target
+    if (t === "clustering") {
+      setSelectedFeatures(columns.filter((c) => !idLikeColumns.has(c)));
+    } else {
+      setSelectedFeatures([]);
+    }
   };
 
   const handleTargetSelect = (col: string) => {
     if (target === col) {
       setTarget(null);
+      setSelectedFeatures([]);
       return;
     }
     setTarget(col);
-    // Remove the new target from features if it was selected
-    setSelectedFeatures((prev) => prev.filter((c) => c !== col));
+    // Auto-select all features except the target and ID-like columns
+    const autoFeatures = columns.filter((c) => c !== col && !idLikeColumns.has(c));
+    setSelectedFeatures(autoFeatures);
   };
 
   const toggleFeature = (col: string) => {
@@ -316,7 +344,7 @@ export function ModelView() {
           {/* Target selection (supervised only) */}
           {isSupervised && (
             <div className="mb-8">
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1">
                 <label className="text-[12px] text-text-secondary">
                   What do you want to predict?
                 </label>
@@ -339,10 +367,37 @@ export function ModelView() {
                   )}
                 </div>
               </div>
+              {distinctTypes.length > 1 && (
+                <div className="flex gap-1.5 mb-2 flex-wrap">
+                  <button
+                    onClick={() => setTypeFilter(null)}
+                    className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors duration-150 cursor-pointer ${
+                      typeFilter === null
+                        ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
+                        : "border-border text-text-tertiary hover:border-text-tertiary"
+                    }`}
+                  >
+                    All types
+                  </button>
+                  {distinctTypes.map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTypeFilter(typeFilter === t ? null : t)}
+                      className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors duration-150 cursor-pointer ${
+                        typeFilter === t
+                          ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
+                          : "border-border text-text-tertiary hover:border-text-tertiary"
+                      }`}
+                    >
+                      {typeLabel(t)}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="flex flex-wrap gap-2">
-                {columns.map((col, i) => {
+                {columns.filter((_, i) => !typeFilter || columnTypes[i] === typeFilter).map((col) => {
                   const isSelected = target === col;
-                  const colType = columnTypes[i];
+                  const colType = columnTypeMap.get(col) ?? "";
                   const showAsRecommended = !hideRecommendations && recommendedTargets.has(col);
                   // Dim numeric columns for classification, string columns for regression
                   const isDimmed =
@@ -394,7 +449,7 @@ export function ModelView() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                {availableFeatures.map((col) => {
+                {availableFeatures.filter((col) => !typeFilter || columnTypeMap.get(col) === typeFilter).map((col) => {
                   const isSelected = selectedFeatures.includes(col);
                   const isIdLike = idLikeColumns.has(col);
                   return (
@@ -423,6 +478,11 @@ export function ModelView() {
               {featureWarning && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2">
                   {featureWarning}
+                </p>
+              )}
+              {selectedFeatures.length > 0 && idLikeColumns.size > 0 && selectedFeatures.every((f) => !idLikeColumns.has(f)) && (
+                <p className="text-[11px] text-text-tertiary mt-2">
+                  {idLikeColumns.size} ID-like {idLikeColumns.size === 1 ? "column was" : "columns were"} excluded automatically. You can add them back if needed.
                 </p>
               )}
             </motion.div>
@@ -515,6 +575,9 @@ export function ModelView() {
                       />
                       <span className="text-[12px] text-text-secondary">Cross-validation</span>
                     </label>
+                    <p className="text-[11px] text-text-tertiary mt-1 ml-5 leading-relaxed max-w-[440px]">
+                      Instead of testing your model once, cross-validation trains and tests it multiple times on different slices of your data. This gives a more reliable estimate of how well the model will perform on new data.
+                    </p>
                     {useCv && (
                       <div className="flex items-center gap-2 mt-2 ml-5">
                         <label className="text-[10px] text-text-tertiary">Folds</label>
@@ -526,6 +589,9 @@ export function ModelView() {
                           onChange={(e) => setCvFolds(parseInt(e.target.value) || 5)}
                           className="w-[60px] px-2 py-1 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
                         />
+                        <span className="text-[11px] text-text-tertiary">
+                          ({cvFolds} rounds of train-and-test)
+                        </span>
                       </div>
                     )}
                   </div>

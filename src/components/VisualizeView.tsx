@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import { useAppStore } from "../stores/appStore";
 import type { ColumnDistribution, CorrelationMatrix, ScatterData, BoxPlotGroup } from "../types/data";
+import { ChartSizeToggle, useChartSize } from "./ChartSizeToggle";
 
 type VisTab = "histogram" | "scatter" | "correlation" | "boxplot";
 
@@ -92,6 +93,7 @@ function HistogramTab({ numericColumns, allColumns }: { numericColumns: string[]
   const [bins, setBins] = useState(20);
   const [distribution, setDistribution] = useState<ColumnDistribution | null>(null);
   const [loading, setLoading] = useState(false);
+  const [chartHeight, chartSize, setChartSize] = useChartSize("M");
 
   useEffect(() => {
     if (!selectedCol) {
@@ -170,7 +172,10 @@ function HistogramTab({ numericColumns, allColumns }: { numericColumns: string[]
 
       {distribution && !loading && (
         <div className="bg-white dark:bg-neutral-800 rounded-xl shadow-sm p-4">
-          <ResponsiveContainer width="100%" height={320}>
+          <div className="flex justify-end mb-2">
+            <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+          </div>
+          <ResponsiveContainer width="100%" height={chartHeight}>
             <BarChart data={chartData} margin={{ top: 10, right: 10, bottom: 40, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
@@ -207,6 +212,7 @@ function ScatterTab({ numericColumns }: { numericColumns: string[] }) {
   const [yCol, setYCol] = useState<string>("");
   const [scatterData, setScatterData] = useState<ScatterData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [chartHeight, chartSize, setChartSize] = useChartSize("M");
 
   useEffect(() => {
     if (!xCol || !yCol) {
@@ -275,7 +281,10 @@ function ScatterTab({ numericColumns }: { numericColumns: string[] }) {
 
       {scatterData && !loading && (
         <div className="bg-white dark:bg-neutral-800 rounded-xl shadow-sm p-4">
-          <ResponsiveContainer width="100%" height={360}>
+          <div className="flex justify-end mb-2">
+            <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+          </div>
+          <ResponsiveContainer width="100%" height={chartHeight}>
             <ScatterChart margin={{ top: 10, right: 10, bottom: 40, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
               <XAxis
@@ -478,6 +487,7 @@ function BoxPlotTab({ numericColumns, allColumns }: { numericColumns: string[]; 
   const [groupCol, setGroupCol] = useState<string>("");
   const [boxData, setBoxData] = useState<BoxPlotGroup[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [chartHeight, chartSize, setChartSize] = useChartSize("M");
 
   useEffect(() => {
     if (!numericCol || !groupCol) {
@@ -541,7 +551,10 @@ function BoxPlotTab({ numericColumns, allColumns }: { numericColumns: string[]; 
 
       {boxData && !loading && (
         <div className="bg-white dark:bg-neutral-800 rounded-xl shadow-sm p-4">
-          <BoxPlotSVG data={boxData} label={numericCol} />
+          <div className="flex justify-end mb-2">
+            <ChartSizeToggle size={chartSize} onChange={setChartSize} />
+          </div>
+          <BoxPlotSVG data={boxData} label={numericCol} height={chartHeight} />
         </div>
       )}
     </div>
@@ -552,9 +565,8 @@ function BoxPlotTab({ numericColumns, allColumns }: { numericColumns: string[]; 
 /*  Custom SVG Box Plot                                               */
 /* ------------------------------------------------------------------ */
 
-function BoxPlotSVG({ data, label }: { data: BoxPlotGroup[]; label: string }) {
+function BoxPlotSVG({ data, label, height = 360 }: { data: BoxPlotGroup[]; label: string; height?: number }) {
   const width = 700;
-  const height = 360;
   const marginTop = 20;
   const marginRight = 20;
   const marginBottom = 70;

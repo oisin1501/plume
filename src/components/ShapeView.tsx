@@ -324,22 +324,12 @@ export function ShapeView() {
 
       {/* Type recommendations banner */}
       {typeRecs.length > 0 && (
-        <div className="flex items-center justify-between px-6 py-2.5 bg-blue-50 dark:bg-blue-500/10 border-b border-blue-200 dark:border-blue-800">
-          <span className="text-[12px] text-blue-700 dark:text-blue-300">
-            {typeRecs.length} {typeRecs.length === 1 ? "column looks" : "columns look"} like{" "}
-            {typeRecs.every((r) => r.recommended_type === typeRecs[0].recommended_type)
-              ? typeRecs[0].recommended_type === "f64" ? "numbers stored as text" : typeRecs[0].recommended_type
-              : "a different type"
-            }
-          </span>
-          <button
-            onClick={handleApplyAllRecommendations}
-            disabled={working}
-            className="px-3 py-1 text-[11px] rounded-[var(--radius-default)] bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors duration-200 cursor-pointer"
-          >
-            Convert all {typeRecs.length}
-          </button>
-        </div>
+        <TypeRecsBanner
+          typeRecs={typeRecs}
+          onApplyAll={handleApplyAllRecommendations}
+          onApplyOne={(col, type) => handleCast(col, type)}
+          disabled={working}
+        />
       )}
 
       {/* Feature Engineering panel */}
@@ -544,6 +534,7 @@ export function ShapeView() {
             <ColumnRow
               key={profile.name}
               profile={profile}
+              totalRows={summary.rows}
               isExpanded={expandedCol === profile.name}
               onToggle={() => setExpandedCol(expandedCol === profile.name ? null : profile.name)}
               onFillMissing={handleFillMissing}
@@ -564,6 +555,7 @@ export function ShapeView() {
 
 function ColumnRow({
   profile,
+  totalRows,
   isExpanded,
   onToggle,
   onFillMissing,
@@ -576,6 +568,7 @@ function ColumnRow({
   recommendation,
 }: {
   profile: ColumnProfile;
+  totalRows: number;
   isExpanded: boolean;
   onToggle: () => void;
   onFillMissing: (col: string, strategy: string) => void;
@@ -591,6 +584,63 @@ function ColumnRow({
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState(profile.name);
   const isCategorical = profile.dtype === "str" || profile.dtype === "cat";
+  const [dismissedHints, setDismissedHints] = useState<Set<string>>(new Set());
+
+  // Build contextual suggestions
+  const hints: { id: string; text: string; action?: { label: string; onClick: () => void } }[] = [];
+
+  // High missing values
+  if (hasMissing && profile.null_percent >= 40) {
+    hints.push({
+      id: "high_missing",
+      text: `${profile.null_percent.toFixed(0)}% of values are missing — consider dropping this column or filling with ${profile.mean != null ? "the average" : "the most common value"}.`,
+      action: profile.mean != null
+        ? { label: "Fill with mean", onClick: () => onFillMissing(profile.name, "mean") }
+        : { label: "Fill with most common", onClick: () => onFillMode(profile.name) },
+    });
+  } else if (hasMissing && profile.null_percent >= 10) {
+    hints.push({
+      id: "moderate_missing",
+      text: `${profile.null_percent.toFixed(0)}% of values are missing. You can fill them or drop the missing rows.`,
+    });
+  }
+
+  // Low cardinality — might be boolean or categorical
+  if (profile.unique_count != null && profile.unique_count === 2 && profile.dtype !== "bool") {
+    hints.push({
+      id: "binary",
+      text: "Only 2 unique values — this could work well as a boolean column.",
+      action: { label: "Convert to bool", onClick: () => onCast(profile.name, "bool") },
+    });
+  }
+
+  // Categorical with low cardinality — suggest one-hot encoding
+  if (isCategorical && profile.unique_count != null && profile.unique_count >= 3 && profile.unique_count <= 10) {
+    hints.push({
+      id: "one_hot",
+      text: `${profile.unique_count} unique categories — one-hot encoding could make this column usable for training.`,
+      action: { label: "One-hot encode", onClick: () => onOneHot(profile.name) },
+    });
+  }
+
+  // High cardinality text — probably not useful as-is
+  if (isCategorical && profile.unique_count != null && profile.unique_count > 50 && totalRows > 0 && profile.unique_count / totalRows > 0.5) {
+    hints.push({
+      id: "high_cardinality",
+      text: "Very high number of unique values — this may be an identifier or free text. Consider dropping it before training.",
+    });
+  }
+
+  // Constant column
+  if (profile.unique_count != null && profile.unique_count <= 1) {
+    hints.push({
+      id: "constant",
+      text: "This column has only one value (or is entirely empty) — it won't help a model learn anything.",
+      action: { label: "Drop column", onClick: () => onDrop(profile.name) },
+    });
+  }
+
+  const visibleHints = hints.filter((h) => !dismissedHints.has(h.id));
 
   return (
     <div className="border-b border-border/50 last:border-b-0">
@@ -646,6 +696,38 @@ function ColumnRow({
                   <span><span className="text-text-tertiary">Max</span> <span className="text-text-primary">{profile.max}</span></span>
                 )}
               </div>
+
+              {/* Contextual suggestions */}
+              {visibleHints.length > 0 && (
+                <div className="flex flex-col gap-1.5 pl-5">
+                  {visibleHints.map((hint) => (
+                    <div
+                      key={hint.id}
+                      className="flex items-start gap-2 py-1.5 text-[11px] bg-amber-50 dark:bg-amber-500/5 rounded-[var(--radius-default)] px-3"
+                    >
+                      <span className="text-amber-600 dark:text-amber-400 leading-relaxed flex-1">
+                        {hint.text}
+                      </span>
+                      {hint.action && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); hint.action!.onClick(); }}
+                          disabled={disabled}
+                          className="px-2 py-0.5 text-[10px] rounded border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-500/10 disabled:opacity-40 transition-colors duration-200 cursor-pointer shrink-0"
+                        >
+                          {hint.action.label}
+                        </button>
+                      )}
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDismissedHints((prev) => new Set(prev).add(hint.id)); }}
+                        className="text-[9px] text-amber-400 dark:text-amber-600 hover:text-amber-600 dark:hover:text-amber-400 cursor-pointer shrink-0 mt-0.5"
+                        title="Dismiss"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Type recommendation */}
               {recommendation && (
@@ -713,6 +795,92 @@ function ColumnRow({
 
                 <ActionButton label="Drop column" onClick={() => onDrop(profile.name)} disabled={disabled} warn />
               </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function TypeRecsBanner({
+  typeRecs,
+  onApplyAll,
+  onApplyOne,
+  disabled,
+}: {
+  typeRecs: TypeRecommendation[];
+  onApplyAll: () => void;
+  onApplyOne: (col: string, type: string) => void;
+  disabled: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // Group recommendations by recommended type
+  const grouped = useMemo(() => {
+    const map = new Map<string, TypeRecommendation[]>();
+    for (const r of typeRecs) {
+      const existing = map.get(r.recommended_type) ?? [];
+      existing.push(r);
+      map.set(r.recommended_type, existing);
+    }
+    return map;
+  }, [typeRecs]);
+
+  const summaryLabel = typeRecs.every((r) => r.recommended_type === typeRecs[0].recommended_type)
+    ? typeRecs[0].recommended_type === "f64" ? "numbers stored as text" : typeRecs[0].recommended_type
+    : "a different type";
+
+  return (
+    <div className="border-b border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-500/10">
+      <div className="flex items-center justify-between px-6 py-2.5">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="text-[12px] text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100 transition-colors duration-200 cursor-pointer"
+        >
+          <span className="mr-1.5 text-[10px]">{expanded ? "▼" : "▶"}</span>
+          {typeRecs.length} {typeRecs.length === 1 ? "column looks" : "columns look"} like {summaryLabel}
+        </button>
+        <button
+          onClick={onApplyAll}
+          disabled={disabled}
+          className="px-3 py-1 text-[11px] rounded-[var(--radius-default)] bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+        >
+          Convert all {typeRecs.length}
+        </button>
+      </div>
+      <AnimatePresence>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <div className="px-6 pb-3">
+              {Array.from(grouped.entries()).map(([type, recs]) => (
+                <div key={type} className="mb-2 last:mb-0">
+                  {grouped.size > 1 && (
+                    <p className="text-[10px] text-blue-600/70 dark:text-blue-400/70 mb-1 uppercase tracking-wide font-medium">
+                      Convert to {type === "f64" ? "number" : type}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {recs.map((r) => (
+                      <button
+                        key={r.column}
+                        onClick={() => onApplyOne(r.column, r.recommended_type)}
+                        disabled={disabled}
+                        className="px-2.5 py-1 text-[11px] rounded-[var(--radius-default)] border border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-500/20 disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+                        title={r.reason}
+                      >
+                        {r.column}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
           </motion.div>
         )}

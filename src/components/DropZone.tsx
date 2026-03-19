@@ -4,44 +4,23 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useAppStore } from "../stores/appStore";
 
-const VALID_EXTENSIONS = ["csv", "tsv", "parquet", "xlsx", "xls"];
-
 export function DropZone() {
   const [isDragging, setIsDragging] = useState(false);
-  const loadFile = useAppStore((s) => s.loadFile);
   const error = useAppStore((s) => s.error);
   const clearError = useAppStore((s) => s.clearError);
 
-  // Use Tauri's native drag-drop event for reliable file path access
+  // Track drag hover state for visual feedback (actual drop is handled by App)
   useEffect(() => {
     const webview = getCurrentWebviewWindow();
     const unlisten = webview.onDragDropEvent((event) => {
       if (event.payload.type === "over") {
         setIsDragging(true);
-      } else if (event.payload.type === "leave") {
+      } else if (event.payload.type === "leave" || event.payload.type === "drop") {
         setIsDragging(false);
-      } else if (event.payload.type === "drop") {
-        setIsDragging(false);
-        clearError();
-        const paths = event.payload.paths;
-        if (paths.length > 0) {
-          const path = paths[0];
-          const ext = path.split(".").pop()?.toLowerCase() ?? "";
-          if (VALID_EXTENSIONS.includes(ext)) {
-            loadFile(path);
-          } else {
-            useAppStore.setState({
-              error: `Unsupported file type ".${ext}". Plume supports CSV, TSV, Parquet, and Excel files.`,
-            });
-          }
-        }
       }
     });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [loadFile, clearError]);
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   const handleClick = async () => {
     clearError();
@@ -52,7 +31,7 @@ export function DropZone() {
       ],
     });
     if (file) {
-      await loadFile(file);
+      await useAppStore.getState().loadFile(file);
     }
   };
 

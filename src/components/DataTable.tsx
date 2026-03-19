@@ -308,34 +308,50 @@ const CHART_HEIGHT = 48;
 
 function MiniChart({ distribution }: { distribution: ColumnDistribution }) {
   const maxCount = Math.max(...distribution.counts);
+  const total = distribution.counts.reduce((a, b) => a + b, 0);
   const isHistogram = distribution.kind === "histogram";
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   return (
     <div className="mt-3">
-      <p className="text-[10px] text-text-tertiary mb-1.5">
-        {isHistogram ? "Distribution" : "Top values"}
-      </p>
+      <div className="flex items-baseline justify-between mb-1.5">
+        <p className="text-[10px] text-text-tertiary">
+          {isHistogram ? "Distribution" : "Top values"}
+        </p>
+        {hoveredIdx != null && (
+          <p className="text-[10px] text-text-primary tabular-nums">
+            <span className="text-text-secondary">{distribution.labels[hoveredIdx]}:</span>{" "}
+            {distribution.counts[hoveredIdx].toLocaleString()} ({total > 0 ? ((distribution.counts[hoveredIdx] / total) * 100).toFixed(1) : 0}%)
+          </p>
+        )}
+      </div>
       <div
         className={`flex items-end ${isHistogram ? "gap-px" : "gap-1"}`}
         style={{ height: CHART_HEIGHT }}
+        onMouseLeave={() => setHoveredIdx(null)}
       >
         {distribution.counts.map((count, i) => {
           const ratio = maxCount > 0 ? count / maxCount : 0;
           const barHeight = Math.max(Math.round(ratio * CHART_HEIGHT), 1);
+          const isHovered = hoveredIdx === i;
           return (
             <div
               key={i}
-              className="flex flex-col items-center justify-end"
+              className="flex flex-col items-center justify-end cursor-default"
               style={{ flex: isHistogram ? 1 : undefined, minWidth: isHistogram ? 0 : undefined, height: CHART_HEIGHT }}
+              onMouseEnter={() => setHoveredIdx(i)}
             >
               <div
-                className="w-full bg-plume-400/60 dark:bg-plume-500/40 rounded-sm"
+                className={`w-full rounded-sm transition-colors duration-100 ${
+                  isHovered
+                    ? "bg-plume-500 dark:bg-plume-400"
+                    : "bg-plume-400/60 dark:bg-plume-500/40"
+                }`}
                 style={{
                   height: barHeight,
                   minWidth: isHistogram ? undefined : 24,
                   maxWidth: isHistogram ? undefined : 48,
                 }}
-                title={`${distribution.labels[i]}: ${count.toLocaleString()}`}
               />
             </div>
           );
