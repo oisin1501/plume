@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
@@ -83,6 +83,7 @@ export function ModelView() {
 
   const [profiles, setProfiles] = useState<ColumnProfile[]>([]);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
+  const [featureSearch, setFeatureSearch] = useState("");
 
   useEffect(() => {
     if (summary) {
@@ -196,9 +197,34 @@ export function ModelView() {
     );
   };
 
-  const selectAllFeatures = () => {
-    setSelectedFeatures(availableFeatures);
-  };
+  // Drag-select: click and drag across feature buttons to select/deselect in bulk
+  const dragMode = useRef<"select" | "deselect" | null>(null);
+  const dragTouched = useRef<Set<string>>(new Set());
+
+  const handleFeaturePointerDown = useCallback((col: string) => {
+    const isSelected = selectedFeatures.includes(col);
+    dragMode.current = isSelected ? "deselect" : "select";
+    dragTouched.current = new Set([col]);
+    toggleFeature(col);
+  }, [selectedFeatures, toggleFeature]);
+
+  const handleFeaturePointerEnter = useCallback((col: string) => {
+    if (dragMode.current === null) return;
+    if (dragTouched.current.has(col)) return;
+    dragTouched.current.add(col);
+    const isSelected = selectedFeatures.includes(col);
+    if (dragMode.current === "select" && !isSelected) {
+      setSelectedFeatures((prev) => [...prev, col]);
+    } else if (dragMode.current === "deselect" && isSelected) {
+      setSelectedFeatures((prev) => prev.filter((c) => c !== col));
+    }
+  }, [selectedFeatures]);
+
+  useEffect(() => {
+    const handlePointerUp = () => { dragMode.current = null; };
+    window.addEventListener("pointerup", handlePointerUp);
+    return () => window.removeEventListener("pointerup", handlePointerUp);
+  }, []);
 
   const deselectAllFeatures = () => {
     setSelectedFeatures([]);
@@ -432,33 +458,74 @@ export function ModelView() {
           )}
 
           {/* Feature selection */}
-          {(isSupervised ? target : true) && (
+          {(isSupervised ? target : true) && (() => {
+            const searchLower = featureSearch.toLowerCase();
+            const visibleFeatures = availableFeatures
+              .filter((col) => !typeFilter || columnTypeMap.get(col) === typeFilter)
+              .filter((col) => !searchLower || col.toLowerCase().includes(searchLower));
+            return (
             <motion.div
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2 }}
               className="mb-8"
             >
-              <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center justify-between mb-1">
                 <label className="text-[12px] text-text-secondary">
                   {isSupervised ? "Using these columns" : "Columns to analyze"}
+                  <span className="ml-2 text-text-tertiary font-normal">
+                    {selectedFeatures.length} of {availableFeatures.length} selected
+                  </span>
                 </label>
                 <div className="flex gap-2">
-                  <button onClick={selectAllFeatures} className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer">All</button>
-                  <button onClick={deselectAllFeatures} className="text-[11px] text-text-tertiary hover:text-text-primary cursor-pointer">None</button>
+                  <button
+                    onClick={() => {
+                      const toAdd = visibleFeatures.filter((c) => !selectedFeatures.includes(c));
+                      if (toAdd.length > 0) setSelectedFeatures((prev) => [...prev, ...toAdd]);
+                    }}
+                    className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
+                  >
+                    {featureSearch || typeFilter ? "Select visible" : "All"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (featureSearch || typeFilter) {
+                        const visibleSet = new Set(visibleFeatures);
+                        setSelectedFeatures((prev) => prev.filter((c) => !visibleSet.has(c)));
+                      } else {
+                        deselectAllFeatures();
+                      }
+                    }}
+                    className="text-[11px] text-text-tertiary hover:text-text-primary cursor-pointer"
+                  >
+                    {featureSearch || typeFilter ? "Deselect visible" : "None"}
+                  </button>
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                {availableFeatures.filter((col) => !typeFilter || columnTypeMap.get(col) === typeFilter).map((col) => {
+              {availableFeatures.length > 15 && (
+                <input
+                  type="text"
+                  placeholder="Search columns..."
+                  value={featureSearch}
+                  onChange={(e) => setFeatureSearch(e.target.value)}
+                  className="w-full mb-2 px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
+                />
+              )}
+              <div
+                className="flex flex-wrap gap-2 max-h-[240px] overflow-auto select-none"
+                style={{ touchAction: "none" }}
+              >
+                {visibleFeatures.map((col) => {
                   const isSelected = selectedFeatures.includes(col);
                   const isIdLike = idLikeColumns.has(col);
                   return (
                     <button
                       key={col}
-                      onClick={() => toggleFeature(col)}
+                      onPointerDown={(e) => { e.preventDefault(); handleFeaturePointerDown(col); }}
+                      onPointerEnter={() => handleFeaturePointerEnter(col)}
                       className={`
                         px-3 py-1.5 text-[12px] rounded-[var(--radius-default)] border
-                        transition-all duration-200 cursor-pointer
+                        transition-all duration-200 cursor-pointer select-none
                         ${isSelected
                           ? isIdLike
                             ? "border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
@@ -474,6 +541,9 @@ export function ModelView() {
                     </button>
                   );
                 })}
+                {visibleFeatures.length === 0 && featureSearch && (
+                  <p className="text-[11px] text-text-tertiary py-2">No columns match "{featureSearch}"</p>
+                )}
               </div>
               {featureWarning && (
                 <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-2">
@@ -486,7 +556,8 @@ export function ModelView() {
                 </p>
               )}
             </motion.div>
-          )}
+            );
+          })()}
 
           {/* Clustering: n_clusters */}
           {task === "clustering" && algorithm !== "dbscan" && (

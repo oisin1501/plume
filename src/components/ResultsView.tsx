@@ -280,7 +280,7 @@ export function ResultsView() {
                   const pct = maxImp > 0 ? (fi.importance / maxImp) * 100 : 0;
                   return (
                     <div key={fi.feature} className="flex items-center gap-3">
-                      <span className="text-[12px] text-text-secondary w-[140px] text-right truncate shrink-0">
+                      <span className="text-[12px] text-text-secondary min-w-[140px] max-w-[220px] text-right truncate shrink-0" title={fi.feature}>
                         {fi.feature}
                       </span>
                       <div className="flex-1 h-[6px] bg-border rounded-full overflow-hidden">
@@ -848,7 +848,7 @@ function SharedFeatureImportance({ results }: { results: import("../types/data")
           const pct = maxAvg > 0 ? (f.avgImportance / maxAvg) * 100 : 0;
           return (
             <div key={f.feature} className="flex items-center gap-3">
-              <span className="text-[12px] text-text-secondary w-[140px] text-right truncate shrink-0">
+              <span className="text-[12px] text-text-secondary min-w-[140px] max-w-[220px] text-right truncate shrink-0" title={f.feature}>
                 {f.feature}
               </span>
               <div className="flex-1 h-[6px] bg-border rounded-full overflow-hidden">
@@ -1060,12 +1060,17 @@ function ShapButton({ result }: { result: TrainResult }) {
         <h3 className="text-[12px] text-text-secondary mb-1">SHAP Explanations (sample predictions)</h3>
         <p className="text-[11px] text-text-tertiary mb-3">
           Each card shows one prediction and the factors that influenced it most.
-          Green bars pushed the prediction higher; red bars pushed it lower. Longer bars = stronger influence.
+          {result.task === "classification"
+            ? " Green bars pushed toward the predicted outcome; red bars pushed away from it."
+            : ` Green bars pushed ${result.target ?? "the prediction"} higher; red bars pushed it lower.`
+          }{" "}Longer bars = stronger influence.
         </p>
         <div className="flex flex-col gap-4">
           {explanations.map((exp, i) => {
             const topPositive = exp.contributions.filter((c) => c.shap_value > 0).slice(0, 2);
             const topNegative = exp.contributions.filter((c) => c.shap_value < 0).slice(0, 2);
+            const isClassification = result.task === "classification";
+            const targetName = result.target ?? "the prediction";
             return (
               <div key={i} className="p-3 border border-border rounded-[var(--radius-default)]">
                 <p className="text-[12px] font-medium text-text-primary mb-2">
@@ -1074,7 +1079,7 @@ function ShapButton({ result }: { result: TrainResult }) {
                 <div className="flex flex-col gap-1">
                   {exp.contributions.slice(0, 6).map((c) => (
                     <div key={c.feature} className="flex items-center gap-2 text-[11px]">
-                      <span className="w-[100px] text-right text-text-secondary truncate shrink-0">{c.feature}</span>
+                      <span className="min-w-[100px] max-w-[180px] text-right text-text-secondary truncate shrink-0" title={c.feature}>{c.feature}</span>
                       <div className="flex-1 flex items-center">
                         <div
                           className={`h-[4px] rounded-full ${c.shap_value >= 0 ? "bg-emerald-400" : "bg-red-400"}`}
@@ -1096,7 +1101,10 @@ function ShapButton({ result }: { result: TrainResult }) {
                         {topPositive.map((c) => (
                           <span key={c.feature}><span className="font-medium text-emerald-600 dark:text-emerald-400">{c.feature}</span> (value: {c.value})</span>
                         )).reduce<React.ReactNode[]>((acc, el, idx) => idx === 0 ? [el] : [...acc, " and ", el], [])}
-                        {" "}pushed the prediction <span className="text-emerald-600 dark:text-emerald-400">higher</span>.{" "}
+                        {isClassification
+                          ? <>{" "}pushed toward <span className="text-emerald-600 dark:text-emerald-400 font-medium">{exp.prediction}</span>.{" "}</>
+                          : <>{" "}pushed <span className="text-emerald-600 dark:text-emerald-400 font-medium">{targetName}</span> higher.{" "}</>
+                        }
                       </>
                     )}
                     {topNegative.length > 0 && (
@@ -1104,7 +1112,10 @@ function ShapButton({ result }: { result: TrainResult }) {
                         {topNegative.map((c) => (
                           <span key={c.feature}><span className="font-medium text-red-500 dark:text-red-400">{c.feature}</span> (value: {c.value})</span>
                         )).reduce<React.ReactNode[]>((acc, el, idx) => idx === 0 ? [el] : [...acc, " and ", el], [])}
-                        {" "}pushed it <span className="text-red-500 dark:text-red-400">lower</span>.
+                        {isClassification
+                          ? <>{" "}pushed away from <span className="text-red-500 dark:text-red-400 font-medium">{exp.prediction}</span>.</>
+                          : <>{" "}pushed <span className="text-red-500 dark:text-red-400 font-medium">{targetName}</span> lower.</>
+                        }
                       </>
                     )}
                     {topPositive.length === 0 && topNegative.length === 0 && (
