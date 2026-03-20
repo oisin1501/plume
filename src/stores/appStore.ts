@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { DataSummary, TablePage, TrainResult, View } from "../types/data";
+import type { DataSummary, TablePage, TrainResult, TransformEntry, View } from "../types/data";
 
 interface AppState {
   view: View;
@@ -16,6 +16,13 @@ interface AppState {
 
   trainingResults: TrainResult[];
   addTrainingResult: (result: TrainResult) => void;
+  removeTrainingResult: (index: number) => void;
+  updateTrainingResultNickname: (index: number, nickname: string) => void;
+
+  historyOpen: boolean;
+  setHistoryOpen: (open: boolean) => void;
+  transformLog: TransformEntry[];
+  fetchTransformLog: () => Promise<void>;
 
   loadFile: (path: string) => Promise<void>;
   resetFile: () => void;
@@ -35,7 +42,27 @@ export const useAppStore = create<AppState>((set) => ({
 
   trainingResults: [],
   addTrainingResult: (result) =>
-    set((s) => ({ trainingResults: [result, ...s.trainingResults] })),
+    set((s) => ({ trainingResults: [{ ...result, trainedAt: Date.now() }, ...s.trainingResults] })),
+  removeTrainingResult: (index) =>
+    set((s) => ({ trainingResults: s.trainingResults.filter((_, i) => i !== index) })),
+  updateTrainingResultNickname: (index, nickname) =>
+    set((s) => ({
+      trainingResults: s.trainingResults.map((r, i) =>
+        i === index ? { ...r, nickname } : r
+      ),
+    })),
+
+  historyOpen: false,
+  setHistoryOpen: (open) => set({ historyOpen: open }),
+  transformLog: [],
+  fetchTransformLog: async () => {
+    try {
+      const log = await invoke<TransformEntry[]>("get_transform_log");
+      set({ transformLog: log });
+    } catch {
+      set({ transformLog: [] });
+    }
+  },
 
   clearError: () => set({ error: null }),
 

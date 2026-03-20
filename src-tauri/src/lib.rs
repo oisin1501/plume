@@ -366,6 +366,41 @@ async fn get_transform_log(state: State<'_, AppState>) -> Result<Vec<TransformEn
 }
 
 #[tauri::command]
+async fn restore_to_step(
+    step: usize,
+    state: State<'_, AppState>,
+) -> Result<DataSummary, String> {
+    let mut history = state.history.lock().unwrap_or_else(|p| p.into_inner());
+    let mut log = state.transform_log.lock().unwrap_or_else(|p| p.into_inner());
+
+    // step 0 = original data (history[0]), step N = after N transforms
+    // history has len == number of transforms applied
+    // to restore to step N, we need to pop (history.len() - step) entries
+    if step > history.len() {
+        return Err("Invalid step: beyond current history".into());
+    }
+
+    let pops = history.len() - step;
+    if pops == 0 {
+        // Already at this step
+        let guard = state.dataframe.lock().unwrap_or_else(|p| p.into_inner());
+        let df = guard.as_ref().ok_or("No dataset loaded")?;
+        return Ok(data::get_summary(df));
+    }
+
+    let mut restored = None;
+    for _ in 0..pops {
+        restored = history.pop();
+        log.pop();
+    }
+
+    let df = restored.ok_or("History is empty")?;
+    let summary = data::get_summary(&df);
+    *state.dataframe.lock().unwrap_or_else(|p| p.into_inner()) = Some(df);
+    Ok(summary)
+}
+
+#[tauri::command]
 async fn load_parquet(path: String, state: State<'_, AppState>) -> Result<DataSummary, String> {
     let path_clone = path.clone();
     let df = tokio::task::spawn_blocking(move || data::read_parquet(&path_clone))
@@ -472,6 +507,43 @@ async fn train_model(
 }
 
 #[tauri::command]
+async fn auto_tune(
+    task: String,
+    target: Option<String>,
+    features: Vec<String>,
+    algorithm: String,
+    use_cv: Option<bool>,
+    cv_folds: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let temp_path = {
+        let mut guard = state.dataframe.lock().unwrap_or_else(|p| p.into_inner());
+        let df = guard.as_mut().ok_or("No dataset loaded")?;
+        data::export_to_temp_csv(df)?
+    };
+
+    let command = serde_json::json!({
+        "action": "auto_tune",
+        "params": {
+            "path": temp_path,
+            "separator": ",",
+            "target": target,
+            "features": features,
+            "task": task,
+            "algorithm": algorithm,
+            "use_cv": use_cv.unwrap_or(true),
+            "cv_folds": cv_folds.unwrap_or(5),
+        }
+    });
+
+    tokio::task::spawn_blocking(move || {
+        ml::run_ml_command(command)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {}", e))?
+}
+
+#[tauri::command]
 async fn export_model_pickle(
     task: String,
     target: Option<String>,
@@ -508,6 +580,7 @@ async fn export_model_pickle(
 #[tauri::command]
 async fn generate_report(
     results: serde_json::Value,
+    shap_data: Option<serde_json::Value>,
     output_path: String,
 ) -> Result<serde_json::Value, String> {
     let command = serde_json::json!({
@@ -515,6 +588,7 @@ async fn generate_report(
         "params": {
             "results": results,
             "output_path": output_path,
+            "shap_data": shap_data,
         }
     });
 
@@ -578,6 +652,87 @@ async fn get_box_plot_data(numeric_col: String, group_col: String, state: State<
 }
 
 #[tauri::command]
+async fn preview_transform(
+    action: String,
+    column: String,
+    strategy: Option<String>,
+    target_type: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let guard = state.dataframe.lock().unwrap_or_else(|p| p.into_inner());
+    let df = guard.as_ref().ok_or("No dataset loaded")?;
+
+    // Get before stats
+    let before_profile = data::profile_column(df, &column)?;
+
+    // Get sample before (up to 10 rows)
+    let col_before = df.column(&column).map_err(|e| format!("{}", e))?;
+    let series_before = col_before.as_materialized_series();
+    let sample_len = series_before.len().min(10);
+    let sample_before: Vec<String> = (0..sample_len)
+        .map(|i| {
+            series_before
+                .get(i)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|_| "null".to_string())
+        })
+        .collect();
+
+    // Clone and apply transform
+    let clone = df.clone();
+    let transformed = match action.as_str() {
+        "fill_missing" => {
+            data::fill_missing_values(&clone, &column, strategy.as_deref().unwrap_or("mean"))?
+        }
+        "cast_column" => {
+            data::cast_col(&clone, &column, target_type.as_deref().unwrap_or("f64"))?
+        }
+        "fill_mode" => data::fill_mode(&clone, &column)?,
+        _ => return Err(format!("Preview not supported for action: {}", action)),
+    };
+
+    // Get after stats
+    let after_profile = data::profile_column(&transformed, &column)?;
+
+    // Get sample after (up to 10 rows)
+    let col_after = transformed.column(&column).map_err(|e| format!("{}", e))?;
+    let series_after = col_after.as_materialized_series();
+    let sample_after: Vec<String> = (0..sample_len)
+        .map(|i| {
+            series_after
+                .get(i)
+                .map(|v| format!("{}", v))
+                .unwrap_or_else(|_| "null".to_string())
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "before": {
+            "dtype": before_profile.dtype,
+            "null_count": before_profile.null_count,
+            "null_percent": before_profile.null_percent,
+            "mean": before_profile.mean,
+            "std": before_profile.std,
+            "min": before_profile.min,
+            "max": before_profile.max,
+            "unique_count": before_profile.unique_count,
+        },
+        "after": {
+            "dtype": after_profile.dtype,
+            "null_count": after_profile.null_count,
+            "null_percent": after_profile.null_percent,
+            "mean": after_profile.mean,
+            "std": after_profile.std,
+            "min": after_profile.min,
+            "max": after_profile.max,
+            "unique_count": after_profile.unique_count,
+        },
+        "sample_before": sample_before,
+        "sample_after": sample_after,
+    }))
+}
+
+#[tauri::command]
 async fn save_text_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("Failed to write file: {}", e))
 }
@@ -615,15 +770,18 @@ pub fn run() {
             undo_transform,
             get_transform_log,
             get_history_length,
+            restore_to_step,
             get_column_distribution,
             get_type_recommendations,
             train_model,
+            auto_tune,
             export_model_pickle,
             generate_report,
             compute_shap,
             get_correlation_matrix,
             get_scatter_data,
             get_box_plot_data,
+            preview_transform,
             save_text_file,
         ])
         .setup(|app| {

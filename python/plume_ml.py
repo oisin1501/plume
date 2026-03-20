@@ -185,6 +185,40 @@ def train_supervised(params):
             respond_error("Too few valid rows after preprocessing. Need at least 5.")
             return
 
+        # --- Class imbalance detection (classification only) ---
+        imbalance_warning = None
+        stratify_arg = None
+        if task == "classification":
+            try:
+                unique_classes, class_counts = np.unique(y, return_counts=True)
+                class_distribution = {str(cls): int(cnt) for cls, cnt in zip(unique_classes, class_counts)}
+                minority_pct = round(float(class_counts.min() / class_counts.sum()) * 100, 2)
+                if minority_pct < 20:
+                    imbalance_warning = {
+                        "class_distribution": class_distribution,
+                        "minority_pct": minority_pct,
+                        "stratified": True,
+                    }
+                    stratify_arg = y
+            except Exception:
+                pass
+
+        # --- Leakage detection ---
+        leakage_warnings = []
+        try:
+            y_series = pd.Series(y)
+            if np.issubdtype(y_series.dtype, np.number):
+                for col in X.columns:
+                    if np.issubdtype(X[col].dtype, np.number):
+                        corr = X[col].corr(y_series)
+                        if corr is not None and not np.isnan(corr) and abs(corr) > 0.95:
+                            leakage_warnings.append({
+                                "feature": col,
+                                "correlation": round(float(corr), 4),
+                            })
+        except Exception:
+            pass
+
         model = get_algorithm(task, algo_name, hyperparams)
 
         # Cross-validation
@@ -200,9 +234,23 @@ def train_supervised(params):
                 "folds": cv_folds,
             }
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=42
-        )
+        # Stratified split for classification if imbalance detected, with fallback
+        if stratify_arg is not None:
+            try:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, random_state=42, stratify=stratify_arg
+                )
+            except ValueError:
+                # Too few samples in a class for stratification; fall back
+                if imbalance_warning:
+                    imbalance_warning["stratified"] = False
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, random_state=42
+                )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=42
+            )
 
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
@@ -218,6 +266,10 @@ def train_supervised(params):
             metrics["recall"] = round(recall_score(y_test, y_pred, average=avg, zero_division=0), 4)
             metrics["f1"] = round(f1_score(y_test, y_pred, average=avg, zero_division=0), 4)
             train_metrics["accuracy"] = round(accuracy_score(y_train, y_pred_train), 4)
+            train_avg = "weighted" if len(set(y_train)) > 2 else "binary"
+            train_metrics["precision"] = round(precision_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
+            train_metrics["recall"] = round(recall_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
+            train_metrics["f1"] = round(f1_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
 
             # Confusion matrix
             cm = confusion_matrix(y_test, y_pred)
@@ -231,6 +283,8 @@ def train_supervised(params):
             metrics["mae"] = round(mean_absolute_error(y_test, y_pred), 4)
             metrics["rmse"] = round(np.sqrt(mean_squared_error(y_test, y_pred)), 4)
             train_metrics["r2"] = round(r2_score(y_train, y_pred_train), 4)
+            train_metrics["mae"] = round(mean_absolute_error(y_train, y_pred_train), 4)
+            train_metrics["rmse"] = round(np.sqrt(mean_squared_error(y_train, y_pred_train)), 4)
 
         # Feature importance
         importance = []
@@ -318,6 +372,10 @@ def train_supervised(params):
             result["roc_curve"] = roc_data
         if residuals:
             result["residuals"] = residuals
+        if imbalance_warning:
+            result["imbalance_warning"] = imbalance_warning
+        if leakage_warnings:
+            result["leakage_warnings"] = leakage_warnings
 
         respond(result)
 
@@ -354,22 +412,56 @@ def train_clustering(params):
         if n_found > 1 and n_found < len(X_scaled):
             metrics["silhouette"] = round(silhouette_score(X_scaled, labels), 4)
 
-        # Cluster summaries
+        # Cluster summaries with richer interpretation
         cluster_summaries = []
         df_result = df[features].copy()
         df_result["__cluster__"] = labels
+
+        # Compute global means for numeric features
+        global_means = {}
+        for feat in features:
+            if df_result[feat].dtype not in ["object", "category"]:
+                global_means[feat] = df_result[feat].mean()
+
         for cid in sorted(set(labels)):
             if cid == -1:
                 continue
             cluster_df = df_result[df_result["__cluster__"] == cid]
             summary = {"cluster": int(cid), "size": len(cluster_df), "characteristics": []}
+            higher_feats = []
+            lower_feats = []
             for feat in features[:5]:
                 col = cluster_df[feat]
                 if col.dtype in ["object", "category"]:
                     mode = col.mode().iloc[0] if len(col.mode()) > 0 else "N/A"
                     summary["characteristics"].append(f"{feat}: mostly {mode}")
                 else:
-                    summary["characteristics"].append(f"{feat}: avg {col.mean():.2f}")
+                    cluster_mean = col.mean()
+                    g_mean = global_means.get(feat)
+                    if g_mean is not None and g_mean != 0:
+                        pct_diff = ((cluster_mean - g_mean) / abs(g_mean)) * 100
+                        direction = "above" if pct_diff >= 0 else "below"
+                        summary["characteristics"].append(
+                            f"{feat}: {cluster_mean:,.2f} ({abs(pct_diff):.0f}% {direction} average)"
+                        )
+                        if pct_diff >= 10:
+                            higher_feats.append(feat)
+                        elif pct_diff <= -10:
+                            lower_feats.append(feat)
+                    else:
+                        summary["characteristics"].append(f"{feat}: avg {cluster_mean:.2f}")
+
+            # Generate plain-English description
+            desc_parts = []
+            if higher_feats:
+                desc_parts.append(f"higher-than-average {' and '.join(higher_feats)}")
+            if lower_feats:
+                desc_parts.append(f"lower-than-average {' and '.join(lower_feats)}")
+            if desc_parts:
+                summary["description"] = f"This group stands out for having {', and '.join(desc_parts)}."
+            else:
+                summary["description"] = "This group is close to the overall average across features."
+
             cluster_summaries.append(summary)
 
         # Scatter plot data via PCA to 2D
@@ -444,6 +536,127 @@ def export_pickle(params):
 
     except Exception as e:
         respond_error(e)
+
+
+def auto_tune(params):
+    """Run randomized hyperparameter search for a given algorithm."""
+    try:
+        from sklearn.model_selection import RandomizedSearchCV
+        from scipy.stats import randint, uniform
+
+        df = load_data(params)
+        target = params["target"]
+        features = params["features"]
+        task = params["task"]
+        algo_name = params["algorithm"]
+        cv_folds = params.get("cv_folds", 5)
+
+        X = df[features].copy()
+        y = df[target].copy()
+
+        # Basic preprocessing (same as train_supervised)
+        target_encoder = None
+        if y.dtype == object or y.dtype.name == "category":
+            from sklearn.preprocessing import LabelEncoder
+            target_encoder = LabelEncoder()
+            y = target_encoder.fit_transform(y)
+
+        for col in X.columns:
+            if X[col].dtype == object or X[col].dtype.name == "category":
+                X[col] = X[col].astype("category").cat.codes
+
+        X = X.apply(pd.to_numeric, errors="coerce")
+        mask = X.notnull().all(axis=1) & pd.Series(y).notnull()
+        X = X[mask]
+        y = np.array(y)[mask] if not hasattr(y, 'iloc') else y[mask]
+
+        X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+        if len(X) < 10:
+            respond_error("Too few valid rows for auto-tuning. Need at least 10.")
+            return
+
+        # Define sensible search grids per algorithm
+        param_grids = {
+            "random_forest": {
+                "n_estimators": randint(50, 300),
+                "max_depth": [None, 5, 8, 12, 20],
+                "min_samples_split": randint(2, 20),
+            },
+            "xgboost": {
+                "n_estimators": randint(50, 300),
+                "max_depth": randint(3, 12),
+                "learning_rate": uniform(0.01, 0.3),
+            },
+            "lightgbm": {
+                "n_estimators": randint(50, 300),
+                "max_depth": [-1, 4, 6, 8, 12],
+                "learning_rate": uniform(0.01, 0.3),
+                "num_leaves": randint(10, 80),
+            },
+            "logistic_regression": {
+                "C": uniform(0.01, 10),
+                "max_iter": [500, 1000, 2000],
+            },
+            "linear_regression": {},
+        }
+
+        grid = param_grids.get(algo_name, {})
+        if not grid:
+            respond_error(f"Auto-tune is not available for {algo_name} (no tunable hyperparameters).")
+            return
+
+        base_model = get_algorithm(task, algo_name)
+        scoring = "accuracy" if task == "classification" else "r2"
+
+        n_iter = min(20, max(5, len(X) // 100))  # scale iterations with data size
+        search = RandomizedSearchCV(
+            base_model,
+            param_distributions=grid,
+            n_iter=n_iter,
+            scoring=scoring,
+            cv=min(cv_folds, len(X) // 2),
+            random_state=42,
+            n_jobs=-1,
+            error_score="raise",
+        )
+
+        search.fit(X, y)
+
+        # Collect all results
+        all_results = []
+        for i in range(len(search.cv_results_["mean_test_score"])):
+            all_results.append({
+                "hyperparams": {k: _convert_numpy(v) for k, v in search.cv_results_["params"][i].items()},
+                "score": round(float(search.cv_results_["mean_test_score"][i]), 4),
+            })
+
+        # Sort by score descending
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+
+        best_params = {k: _convert_numpy(v) for k, v in search.best_params_.items()}
+
+        respond({
+            "status": "success",
+            "best_hyperparams": best_params,
+            "best_score": round(float(search.best_score_), 4),
+            "metric": scoring,
+            "all_results": all_results[:10],  # top 10
+        })
+
+    except Exception as e:
+        respond_error(e)
+
+
+def _convert_numpy(val):
+    """Convert numpy types to Python native types for JSON serialization."""
+    if isinstance(val, (np.integer,)):
+        return int(val)
+    if isinstance(val, (np.floating,)):
+        return round(float(val), 6)
+    if isinstance(val, np.ndarray):
+        return val.tolist()
+    return val
 
 
 def generate_report(params):
@@ -532,6 +745,32 @@ def generate_report(params):
 
             if r.get("train_size"):
                 html_parts.append(f"<p class='meta'>Trained on {r['train_size']} rows, tested on {r.get('test_size', '?')} rows.</p>")
+
+        # SHAP Explanations section (optional)
+        shap_data = params.get("shap_data")
+        if shap_data:
+            html_parts.append("<h2>SHAP Explanations</h2>")
+            for si, sample in enumerate(shap_data):
+                pred = sample.get("prediction", "N/A")
+                html_parts.append(f"<h3>Sample {si + 1} — Prediction: {pred}</h3>")
+                contributions = sample.get("contributions", [])
+                if contributions:
+                    max_abs = max(abs(c.get("shap_value", 0)) for c in contributions) or 1
+                    for c in contributions:
+                        fname = c.get("feature", "")
+                        fval = c.get("value", "")
+                        sv = c.get("shap_value", 0)
+                        bar_pct = abs(sv) / max_abs * 100
+                        bar_color = "#22c55e" if sv >= 0 else "#ef4444"
+                        html_parts.append(
+                            f"<div style='display:flex;align-items:center;margin:4px 0;font-size:12px'>"
+                            f"<span style='width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{fname} = {fval}</span>"
+                            f"<div style='flex:1;background:#e5e5e5;border-radius:3px;height:14px;margin:0 8px;position:relative'>"
+                            f"<div style='width:{bar_pct:.1f}%;background:{bar_color};height:14px;border-radius:3px'></div>"
+                            f"</div>"
+                            f"<span style='width:60px;text-align:right;flex-shrink:0'>{sv:+.4f}</span>"
+                            f"</div>"
+                        )
 
         html_parts.append("</body></html>")
 
@@ -648,6 +887,8 @@ def main():
             generate_report(params)
         elif action == "compute_shap":
             compute_shap(params)
+        elif action == "auto_tune":
+            auto_tune(params)
         elif action == "ping":
             respond({"status": "pong"})
         else:

@@ -56,6 +56,12 @@ export interface TransformStep {
   params: Record<string, string>;
 }
 
+export interface TransformEntry {
+  action: string;
+  column: string | null;
+  detail: string;
+}
+
 export interface AllColumnProfiles {
   profiles: ColumnProfile[];
 }
@@ -79,10 +85,12 @@ export interface TrainResult {
   algorithm: string;
   target?: string | null;
   hyperparams?: Record<string, any>;
+  nickname?: string;
+  trainedAt?: number;
   metrics: Record<string, any>;
   train_metrics?: Record<string, number>;
   feature_importance?: { feature: string; importance: number }[];
-  clusters?: { cluster: number; size: number; characteristics: string[] }[];
+  clusters?: { cluster: number; size: number; characteristics: string[]; description?: string }[];
   features_used?: string[];
   train_size?: number;
   test_size?: number;
@@ -111,4 +119,17 @@ export interface TrainResult {
     explained_variance: number[];
   };
   predictions?: number[];
+  imbalance_warning?: {
+    class_distribution: Record<string, number>;
+    minority_pct: number;
+    stratified: boolean;
+  };
+  leakage_warnings?: { feature: string; correlation: number }[];
+}
+
+export interface AutoTuneResult {
+  best_hyperparams: Record<string, number>;
+  best_score: number;
+  metric: string;
+  all_results: { hyperparams: Record<string, number>; score: number }[];
 }

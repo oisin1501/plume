@@ -9,6 +9,7 @@ import { ShapeView } from "./components/ShapeView";
 import { ModelView } from "./components/ModelView";
 import { ResultsView } from "./components/ResultsView";
 import { VisualizeView } from "./components/VisualizeView";
+import { HistoryPanel } from "./components/HistoryPanel";
 
 const VALID_EXTENSIONS = ["csv", "tsv", "parquet", "xlsx", "xls"];
 
@@ -43,6 +44,7 @@ function App() {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-surface">
       <Sidebar />
+      <HistoryPanel />
 
       <main className="flex-1 flex flex-col overflow-hidden relative">
         {/* Header — draggable title bar region */}

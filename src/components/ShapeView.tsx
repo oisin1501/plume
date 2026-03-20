@@ -8,6 +8,37 @@ const NUMERIC_TYPES = new Set(["f64", "i64", "i32", "f32", "u8", "u16", "u32", "
 
 type FeatureTab = "combine" | "transform" | "bin";
 
+interface TransformPreview {
+  action: string;
+  column: string;
+  strategy?: string;
+  targetType?: string;
+  data: {
+    before: {
+      dtype: string;
+      null_count: number;
+      null_percent: number;
+      mean: number | null;
+      std: number | null;
+      min: string | null;
+      max: string | null;
+      unique_count: number | null;
+    };
+    after: {
+      dtype: string;
+      null_count: number;
+      null_percent: number;
+      mean: number | null;
+      std: number | null;
+      min: string | null;
+      max: string | null;
+      unique_count: number | null;
+    };
+    sample_before: string[];
+    sample_after: string[];
+  };
+}
+
 interface TransformEntry {
   action: string;
   column: string | null;
@@ -37,6 +68,9 @@ export function ShapeView() {
   const [transformCol, setTransformCol] = useState("");
   const [transformType, setTransformType] = useState("log");
   const [transformName, setTransformName] = useState("");
+
+  // Preview state
+  const [preview, setPreview] = useState<TransformPreview | null>(null);
 
   // Bin column state
   const [binCol, setBinCol] = useState("");
@@ -77,16 +111,53 @@ export function ShapeView() {
     setWorking(false);
   }, [refreshProfiles]);
 
-  const handleFillMissing = useCallback(async (column: string, strategy: string) => {
+  const requestPreview = useCallback(async (
+    action: string,
+    column: string,
+    strategy?: string,
+    targetType?: string,
+  ) => {
     setWorking(true);
     try {
-      await invoke("fill_missing", { column, strategy });
+      const data = await invoke<TransformPreview["data"]>("preview_transform", {
+        action,
+        column,
+        strategy: strategy ?? null,
+        targetType: targetType ?? null,
+      });
+      setPreview({ action, column, strategy, targetType, data });
+    } catch (err) {
+      console.error("Preview failed:", err);
+    }
+    setWorking(false);
+  }, []);
+
+  const handleApplyPreview = useCallback(async () => {
+    if (!preview) return;
+    setWorking(true);
+    setPreview(null);
+    try {
+      if (preview.action === "fill_missing") {
+        await invoke("fill_missing", { column: preview.column, strategy: preview.strategy });
+      } else if (preview.action === "cast_column") {
+        await invoke("cast_column", { column: preview.column, targetType: preview.targetType });
+      } else if (preview.action === "fill_mode") {
+        await invoke("fill_mode", { column: preview.column });
+      }
       await updateAfterTransform();
     } catch (err) {
-      console.error("Fill missing failed:", err);
+      console.error("Apply transform failed:", err);
       setWorking(false);
     }
-  }, [updateAfterTransform]);
+  }, [preview, updateAfterTransform]);
+
+  const handleCancelPreview = useCallback(() => {
+    setPreview(null);
+  }, []);
+
+  const handleFillMissing = useCallback(async (column: string, strategy: string) => {
+    await requestPreview("fill_missing", column, strategy);
+  }, [requestPreview]);
 
   const handleDropColumn = useCallback(async (column: string) => {
     setWorking(true);
@@ -101,26 +172,12 @@ export function ShapeView() {
   }, [updateAfterTransform]);
 
   const handleCast = useCallback(async (column: string, targetType: string) => {
-    setWorking(true);
-    try {
-      await invoke("cast_column", { column, targetType });
-      await updateAfterTransform();
-    } catch (err) {
-      console.error("Cast failed:", err);
-      setWorking(false);
-    }
-  }, [updateAfterTransform]);
+    await requestPreview("cast_column", column, undefined, targetType);
+  }, [requestPreview]);
 
   const handleFillMode = useCallback(async (column: string) => {
-    setWorking(true);
-    try {
-      await invoke("fill_mode", { column });
-      await updateAfterTransform();
-    } catch (err) {
-      console.error("Fill mode failed:", err);
-      setWorking(false);
-    }
-  }, [updateAfterTransform]);
+    await requestPreview("fill_mode", column);
+  }, [requestPreview]);
 
   const handleOneHot = useCallback(async (column: string) => {
     setWorking(true);
@@ -531,21 +588,30 @@ export function ShapeView() {
       <div className="flex-1 overflow-auto">
         <div className="max-w-[720px] mx-auto py-4 px-6">
           {profiles.map((profile) => (
-            <ColumnRow
-              key={profile.name}
-              profile={profile}
-              totalRows={summary.rows}
-              isExpanded={expandedCol === profile.name}
-              onToggle={() => setExpandedCol(expandedCol === profile.name ? null : profile.name)}
-              onFillMissing={handleFillMissing}
-              onFillMode={handleFillMode}
-              onOneHot={handleOneHot}
-              onRename={handleRename}
-              onDrop={handleDropColumn}
-              onCast={handleCast}
-              disabled={working}
-              recommendation={typeRecs.find((r) => r.column === profile.name)}
-            />
+            <div key={profile.name}>
+              <ColumnRow
+                profile={profile}
+                totalRows={summary.rows}
+                isExpanded={expandedCol === profile.name}
+                onToggle={() => setExpandedCol(expandedCol === profile.name ? null : profile.name)}
+                onFillMissing={handleFillMissing}
+                onFillMode={handleFillMode}
+                onOneHot={handleOneHot}
+                onRename={handleRename}
+                onDrop={handleDropColumn}
+                onCast={handleCast}
+                disabled={working}
+                recommendation={typeRecs.find((r) => r.column === profile.name)}
+              />
+              {preview && preview.column === profile.name && (
+                <PreviewPanel
+                  preview={preview}
+                  onApply={handleApplyPreview}
+                  onCancel={handleCancelPreview}
+                  disabled={working}
+                />
+              )}
+            </div>
           ))}
         </div>
       </div>
@@ -886,6 +952,170 @@ function TypeRecsBanner({
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+function PreviewPanel({
+  preview,
+  onApply,
+  onCancel,
+  disabled,
+}: {
+  preview: TransformPreview;
+  onApply: () => void;
+  onCancel: () => void;
+  disabled: boolean;
+}) {
+  const { before, after, sample_before, sample_after } = preview.data;
+
+  const actionLabel =
+    preview.action === "fill_missing"
+      ? `Fill missing (${preview.strategy})`
+      : preview.action === "cast_column"
+        ? `Cast to ${preview.targetType}`
+        : "Fill with most common";
+
+  // Stats that changed
+  const statRows: { label: string; before: string; after: string }[] = [];
+
+  if (before.null_count !== after.null_count) {
+    statRows.push({
+      label: "Nulls",
+      before: `${before.null_count} (${before.null_percent.toFixed(1)}%)`,
+      after: `${after.null_count} (${after.null_percent.toFixed(1)}%)`,
+    });
+  }
+  if (before.dtype !== after.dtype) {
+    statRows.push({ label: "Type", before: before.dtype, after: after.dtype });
+  }
+  if (before.mean !== after.mean) {
+    statRows.push({
+      label: "Mean",
+      before: before.mean != null ? before.mean.toFixed(4) : "-",
+      after: after.mean != null ? after.mean.toFixed(4) : "-",
+    });
+  }
+  if (before.std !== after.std) {
+    statRows.push({
+      label: "Std",
+      before: before.std != null ? before.std.toFixed(4) : "-",
+      after: after.std != null ? after.std.toFixed(4) : "-",
+    });
+  }
+  if (before.min !== after.min) {
+    statRows.push({ label: "Min", before: before.min ?? "-", after: after.min ?? "-" });
+  }
+  if (before.max !== after.max) {
+    statRows.push({ label: "Max", before: before.max ?? "-", after: after.max ?? "-" });
+  }
+  if (before.unique_count !== after.unique_count) {
+    statRows.push({
+      label: "Unique",
+      before: before.unique_count != null ? String(before.unique_count) : "-",
+      after: after.unique_count != null ? String(after.unique_count) : "-",
+    });
+  }
+
+  // If nothing changed in stats, show key stats anyway
+  if (statRows.length === 0) {
+    statRows.push({
+      label: "Nulls",
+      before: `${before.null_count}`,
+      after: `${after.null_count}`,
+    });
+    if (before.mean != null) {
+      statRows.push({
+        label: "Mean",
+        before: before.mean.toFixed(4),
+        after: after.mean != null ? after.mean.toFixed(4) : "-",
+      });
+    }
+  }
+
+  return (
+    <motion.div
+      initial={{ height: 0, opacity: 0 }}
+      animate={{ height: "auto", opacity: 1 }}
+      exit={{ height: 0, opacity: 0 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className="overflow-hidden"
+    >
+      <div className="mx-4 mb-3 p-4 rounded-[var(--radius-default)] border border-plume-300 dark:border-plume-700 bg-plume-50 dark:bg-plume-500/5">
+        <div className="flex items-center justify-between mb-3">
+          <span className="text-[12px] font-medium text-plume-700 dark:text-plume-300">
+            Preview: {actionLabel} on "{preview.column}"
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={onCancel}
+              className="px-3 py-1 text-[11px] rounded-[var(--radius-default)] border border-border text-text-secondary hover:bg-surface-alt transition-colors duration-200 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onApply}
+              disabled={disabled}
+              className="px-3 py-1 text-[11px] rounded-[var(--radius-default)] bg-plume-500 text-white hover:bg-plume-600 disabled:opacity-40 transition-colors duration-200 cursor-pointer"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+
+        {/* Stats comparison */}
+        <div className="mb-3">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-text-tertiary">
+                <th className="text-left font-normal pr-4 pb-1">Stat</th>
+                <th className="text-right font-normal pr-4 pb-1">Before</th>
+                <th className="text-right font-normal pb-1">After</th>
+              </tr>
+            </thead>
+            <tbody>
+              {statRows.map((row) => (
+                <tr key={row.label}>
+                  <td className="text-text-tertiary pr-4 py-0.5">{row.label}</td>
+                  <td className="text-right text-text-secondary pr-4 py-0.5">{row.before}</td>
+                  <td className={`text-right py-0.5 ${row.before !== row.after ? "text-plume-600 dark:text-plume-400 font-medium" : "text-text-secondary"}`}>
+                    {row.after}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Sample values */}
+        {sample_before.length > 0 && (
+          <div>
+            <p className="text-[10px] text-text-tertiary mb-1">Sample values (first {sample_before.length} rows)</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-[11px]">
+                <thead>
+                  <tr className="text-text-tertiary">
+                    <th className="text-left font-normal pr-4 pb-1 w-8">#</th>
+                    <th className="text-left font-normal pr-4 pb-1">Before</th>
+                    <th className="text-left font-normal pb-1">After</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sample_before.map((val, i) => (
+                    <tr key={i}>
+                      <td className="text-text-tertiary pr-4 py-0.5">{i + 1}</td>
+                      <td className="text-text-secondary pr-4 py-0.5 font-mono">{val}</td>
+                      <td className={`py-0.5 font-mono ${val !== sample_after[i] ? "text-plume-600 dark:text-plume-400 font-medium" : "text-text-secondary"}`}>
+                        {sample_after[i]}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </motion.div>
   );
 }
 

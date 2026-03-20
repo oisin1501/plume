@@ -68,12 +68,20 @@ export function Sidebar() {
           </div>
         )}
         {summary && (
-          <button
-            onClick={handleNewFile}
-            className="text-[11px] text-text-tertiary hover:text-text-primary transition-colors duration-200 cursor-pointer"
-          >
-            Load new file
-          </button>
+          <div className="flex flex-col gap-1.5">
+            <button
+              onClick={() => useAppStore.getState().setHistoryOpen(true)}
+              className="text-[11px] text-text-tertiary hover:text-text-primary transition-colors duration-200 cursor-pointer text-left"
+            >
+              History
+            </button>
+            <button
+              onClick={handleNewFile}
+              className="text-[11px] text-text-tertiary hover:text-text-primary transition-colors duration-200 cursor-pointer text-left"
+            >
+              Load new file
+            </button>
+          </div>
         )}
       </div>
     </nav>

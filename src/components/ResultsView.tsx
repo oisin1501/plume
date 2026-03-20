@@ -35,14 +35,98 @@ const ALGO_LABELS: Record<string, string> = {
   hierarchical: "Hierarchical",
 };
 
+const HYPERPARAM_SHORT_LABELS: Record<string, string> = {
+  n_estimators: "trees",
+  max_depth: "depth",
+  learning_rate: "lr",
+  min_samples_split: "min split",
+  C: "C",
+  max_iter: "max iter",
+  num_leaves: "leaves",
+  eps: "eps",
+  min_samples: "min samples",
+};
+
+/** Generate a display label for a training result, disambiguating duplicate algorithms. */
+function getRunLabel(result: TrainResult, allResults: TrainResult[]): string {
+  if (result.nickname) return result.nickname;
+  const algoLabel = ALGO_LABELS[result.algorithm] ?? result.algorithm;
+  const sameAlgo = allResults.filter((r) => r.algorithm === result.algorithm);
+  if (sameAlgo.length <= 1) return algoLabel;
+  // Disambiguate with hyperparams
+  const hp = result.hyperparams;
+  if (hp && Object.keys(hp).length > 0) {
+    const parts = Object.entries(hp)
+      .slice(0, 3)
+      .map(([k, v]) => `${HYPERPARAM_SHORT_LABELS[k] ?? k} ${v}`);
+    return `${algoLabel} (${parts.join(", ")})`;
+  }
+  // Fallback: use run number
+  const idx = sameAlgo.indexOf(result);
+  return `${algoLabel} #${sameAlgo.length - idx}`;
+}
+
+function EditableNickname({
+  result,
+  resultIndex,
+  allResults,
+}: {
+  result: TrainResult;
+  resultIndex: number;
+  allResults: TrainResult[];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(result.nickname ?? "");
+  const updateNickname = useAppStore((s) => s.updateTrainingResultNickname);
+
+  const save = () => {
+    const trimmed = value.trim();
+    updateNickname(resultIndex, trimmed);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") { setValue(result.nickname ?? ""); setEditing(false); }
+        }}
+        placeholder={getRunLabel(result, allResults)}
+        className="text-[11px] px-1.5 py-0.5 border border-plume-500 rounded bg-surface text-text-primary outline-none w-[160px]"
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={() => { setValue(result.nickname ?? ""); setEditing(true); }}
+      className="cursor-pointer hover:text-plume-600 dark:hover:text-plume-400 transition-colors duration-150"
+      title="Click to rename"
+    >
+      {getRunLabel(result, allResults)}
+    </span>
+  );
+}
+
 type ResultTab = "summary" | "details";
 
 export function ResultsView() {
   const summary = useAppStore((s) => s.summary);
   const trainingResults = useAppStore((s) => s.trainingResults);
+  const removeTrainingResult = useAppStore((s) => s.removeTrainingResult);
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [tab, setTab] = useState<ResultTab>("summary");
   const [chartHeight, chartSize, setChartSize] = useChartSize("M");
+  const [overfitFixResult, setOverfitFixResult] = useState<TrainResult | null>(null);
+
+  // Keep selectedIdx in bounds when results are removed
+  const safeIdx = Math.min(selectedIdx, trainingResults.length - 1);
+  if (safeIdx !== selectedIdx && trainingResults.length > 0) setSelectedIdx(safeIdx);
 
   if (!summary || trainingResults.length === 0) {
     return (
@@ -104,32 +188,45 @@ export function ResultsView() {
             {hasMultiple && (
               <div className="flex items-center gap-2 mb-6 flex-wrap">
                 {trainingResults.map((r, i) => (
-                  <button
-                    key={i}
-                    onClick={() => setSelectedIdx(i)}
-                    className={`
-                      px-3 py-1.5 text-[11px] rounded-[var(--radius-default)] border
-                      transition-all duration-200 cursor-pointer
-                      ${selectedIdx === i
-                        ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
-                        : "border-border text-text-tertiary hover:border-text-tertiary hover:text-text-secondary"
-                      }
-                    `}
-                  >
-                    {ALGO_LABELS[r.algorithm] ?? r.algorithm}
-                    {r.task === "classification" && r.metrics.accuracy != null && (
-                      <span className="ml-1.5 tabular-nums">{(r.metrics.accuracy * 100).toFixed(0)}%</span>
-                    )}
-                    {r.task === "regression" && r.metrics.r2 != null && (
-                      <span className="ml-1.5 tabular-nums">R²{r.metrics.r2.toFixed(2)}</span>
-                    )}
-                  </button>
+                  <div key={i} className="relative group">
+                    <button
+                      onClick={() => setSelectedIdx(i)}
+                      className={`
+                        px-3 py-1.5 text-[11px] rounded-[var(--radius-default)] border
+                        transition-all duration-200 cursor-pointer pr-6
+                        ${selectedIdx === i
+                          ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
+                          : "border-border text-text-tertiary hover:border-text-tertiary hover:text-text-secondary"
+                        }
+                      `}
+                    >
+                      {getRunLabel(r, trainingResults)}
+                      {r.task === "classification" && r.metrics.accuracy != null && (
+                        <span className="ml-1.5 tabular-nums">{(r.metrics.accuracy * 100).toFixed(0)}%</span>
+                      )}
+                      {r.task === "regression" && r.metrics.r2 != null && (
+                        <span className="ml-1.5 tabular-nums">R²{r.metrics.r2.toFixed(2)}</span>
+                      )}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeTrainingResult(i);
+                        if (selectedIdx >= trainingResults.length - 1) setSelectedIdx(Math.max(0, trainingResults.length - 2));
+                        else if (i < selectedIdx) setSelectedIdx(selectedIdx - 1);
+                      }}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-surface border border-border text-text-tertiary hover:text-red-500 hover:border-red-300 text-[10px] leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-150 cursor-pointer"
+                      title="Remove this run"
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
 
         <motion.div
-          key={selectedIdx}
+          key={`${result.algorithm}-${result.trainedAt ?? selectedIdx}`}
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.3 }}
@@ -138,7 +235,7 @@ export function ResultsView() {
           {/* Headline */}
           <div>
             <p className="text-[11px] text-text-tertiary mb-1">
-              {ALGO_LABELS[result.algorithm] ?? result.algorithm}
+              <EditableNickname result={result} resultIndex={selectedIdx} allResults={trainingResults} />
             </p>
             <h2 className="text-[20px] font-semibold text-text-primary leading-tight">
               {isClassification && `Your model correctly identifies ${Math.round((result.metrics.accuracy ?? 0) * 100)}% of cases.`}
@@ -208,7 +305,65 @@ export function ResultsView() {
             )}
           </div>
 
-          {/* Overfitting warning */}
+          {/* Class imbalance warning */}
+          {result.imbalance_warning && (() => {
+            const { class_distribution, minority_pct, stratified } = result.imbalance_warning;
+            const maxCount = Math.max(...Object.values(class_distribution));
+            return (
+              <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-700 rounded-[var(--radius-default)] px-4 py-3">
+                <p className="text-[12px] font-medium text-amber-700 dark:text-amber-400 mb-1">
+                  Class imbalance detected
+                </p>
+                <p className="text-[12px] text-amber-700/80 dark:text-amber-300/80 leading-relaxed">
+                  Your target has imbalanced classes — the smallest class represents only {minority_pct.toFixed(1)}% of the data.
+                  {stratified ? " Plume used stratified splitting to ensure each class is fairly represented in both training and test sets." : " Stratified splitting was not possible due to very small class sizes."}
+                </p>
+                <div className="mt-2 flex flex-col gap-1">
+                  {Object.entries(class_distribution).map(([cls, count]) => (
+                    <div key={cls} className="flex items-center gap-2">
+                      <span className="text-[11px] text-amber-700/80 dark:text-amber-300/80 min-w-[60px] text-right truncate shrink-0">{cls}</span>
+                      <div className="flex-1 h-[5px] bg-amber-200/50 dark:bg-amber-700/30 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-amber-400 rounded-full"
+                          style={{ width: `${(count / maxCount) * 100}%` }}
+                        />
+                      </div>
+                      <span className="text-[11px] text-amber-700/70 dark:text-amber-300/70 tabular-nums w-[40px] text-right shrink-0">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Data leakage warning */}
+          {result.leakage_warnings && result.leakage_warnings.length > 0 && (() => {
+            const warnings = result.leakage_warnings!;
+            const count = warnings.length;
+            return (
+              <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-700 rounded-[var(--radius-default)] px-4 py-3">
+                <p className="text-[12px] font-medium text-red-700 dark:text-red-400 mb-1">
+                  Possible data leakage
+                </p>
+                <p className="text-[12px] text-red-700/80 dark:text-red-300/80 leading-relaxed mb-2">
+                  {count === 1 ? "A feature has" : "Some features have"} suspiciously high correlation with the target, which may mean it contains information that wouldn't be available when making real predictions.
+                </p>
+                <div className="flex flex-col gap-1">
+                  {warnings.map((w) => (
+                    <div key={w.feature} className="flex items-center gap-2 text-[11px]">
+                      <span className="font-medium text-red-700 dark:text-red-400">{w.feature}</span>
+                      <span className="text-red-600/60 dark:text-red-400/60">correlation: {w.correlation.toFixed(3)}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-red-600/70 dark:text-red-300/60 mt-2">
+                  Consider removing {count === 1 ? "this feature" : "these features"} and retraining to see if performance is genuinely this good.
+                </p>
+              </div>
+            );
+          })()}
+
+          {/* Overfitting warning with recommendations */}
           {result.train_metrics && (() => {
             const trainScore = isClassification
               ? result.train_metrics!.accuracy
@@ -227,35 +382,65 @@ export function ResultsView() {
             const testPct = (testScore * 100).toFixed(0);
             const metric = isClassification ? "accuracy" : "R²";
             return (
-              <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-700 rounded-[var(--radius-default)] px-4 py-3">
-                <p className="text-[12px] font-medium text-amber-700 dark:text-amber-400 mb-1">
-                  Possible overfitting detected
-                </p>
-                <p className="text-[12px] text-amber-700/80 dark:text-amber-300/80 leading-relaxed">
-                  Your model scores {trainPct}% {metric} on training data but only {testPct}% on new data.
-                  This suggests the model memorized the training examples rather than learning general patterns.
-                  Try reducing model complexity (fewer trees, shallower depth) or adding more data.
-                </p>
-              </div>
+              <OverfitWarning
+                trainPct={trainPct}
+                testPct={testPct}
+                metric={metric}
+                gap={gap}
+                result={result}
+                onFixApplied={(fixResult) => {
+                  setSelectedIdx((prev) => prev + 1);
+                  setOverfitFixResult(fixResult);
+                }}
+              />
             );
           })()}
 
           {/* Metrics */}
           <div>
-            <h3 className="text-[12px] text-text-secondary mb-3">Metrics</h3>
+            <h3 className="text-[12px] text-text-secondary mb-1">Metrics</h3>
+            {result.train_metrics && (
+              <p className="text-[11px] text-text-tertiary mb-3">
+                Test performance is the main number. Training performance is shown below each metric for comparison.
+              </p>
+            )}
             <div className="grid grid-cols-3 gap-4">
               {isClassification && (
                 <>
-                  <MetricCard label="Accuracy" value={`${(result.metrics.accuracy * 100).toFixed(1)}%`} />
-                  <MetricCard label="Precision" value={`${(result.metrics.precision * 100).toFixed(1)}%`} />
-                  <MetricCard label="Recall" value={`${(result.metrics.recall * 100).toFixed(1)}%`} />
+                  <MetricCard
+                    label="Accuracy"
+                    value={`${(result.metrics.accuracy * 100).toFixed(1)}%`}
+                    trainValue={result.train_metrics?.accuracy != null ? `${(result.train_metrics.accuracy * 100).toFixed(1)}%` : undefined}
+                  />
+                  <MetricCard
+                    label="Precision"
+                    value={`${(result.metrics.precision * 100).toFixed(1)}%`}
+                    trainValue={result.train_metrics?.precision != null ? `${(result.train_metrics.precision * 100).toFixed(1)}%` : undefined}
+                  />
+                  <MetricCard
+                    label="Recall"
+                    value={`${(result.metrics.recall * 100).toFixed(1)}%`}
+                    trainValue={result.train_metrics?.recall != null ? `${(result.train_metrics.recall * 100).toFixed(1)}%` : undefined}
+                  />
                 </>
               )}
               {isRegression && (
                 <>
-                  <MetricCard label="R²" value={result.metrics.r2.toFixed(3)} />
-                  <MetricCard label="MAE" value={result.metrics.mae.toFixed(3)} />
-                  <MetricCard label="RMSE" value={result.metrics.rmse.toFixed(3)} />
+                  <MetricCard
+                    label="R²"
+                    value={result.metrics.r2.toFixed(3)}
+                    trainValue={result.train_metrics?.r2 != null ? result.train_metrics.r2.toFixed(3) : undefined}
+                  />
+                  <MetricCard
+                    label="MAE"
+                    value={result.metrics.mae.toFixed(3)}
+                    trainValue={result.train_metrics?.mae != null ? result.train_metrics.mae.toFixed(3) : undefined}
+                  />
+                  <MetricCard
+                    label="RMSE"
+                    value={result.metrics.rmse.toFixed(3)}
+                    trainValue={result.train_metrics?.rmse != null ? result.train_metrics.rmse.toFixed(3) : undefined}
+                  />
                 </>
               )}
               {isClustering && (
@@ -331,6 +516,9 @@ export function ResultsView() {
                         {cluster.size.toLocaleString()} items
                       </span>
                     </div>
+                    {cluster.description && (
+                      <p className="text-[12px] text-text-secondary mb-2 italic">{cluster.description}</p>
+                    )}
                     <div className="flex flex-col gap-1">
                       {cluster.characteristics.map((c, i) => (
                         <span key={i} className="text-[12px] text-text-secondary">{c}</span>
@@ -343,23 +531,22 @@ export function ResultsView() {
           )}
 
           {/* ROC Curve (classification) */}
-          {isClassification && result.roc_curve && (
+          {isClassification && result.roc_curve && (() => {
+            const showOverlay = overfitFixResult?.roc_curve != null;
+            return (
             <div>
               <div className="flex items-center justify-between mb-1">
                 <h3 className="text-[12px] text-text-secondary">
                   ROC Curve{result.roc_curve.auc != null && ` (AUC = ${result.roc_curve.auc.toFixed(3)})`}
+                  {showOverlay && overfitFixResult.roc_curve!.auc != null && (
+                    <span className="text-emerald-600 dark:text-emerald-400"> vs regularized (AUC = {overfitFixResult.roc_curve!.auc.toFixed(3)})</span>
+                  )}
                 </h3>
                 <ChartSizeToggle size={chartSize} onChange={setChartSize} />
               </div>
               <p className="text-[11px] text-text-tertiary mb-3">The closer the curve is to the top-left corner, the better the model. The diagonal line represents random guessing.</p>
               <ResponsiveContainer width="100%" height={chartHeight}>
-                <LineChart
-                  data={result.roc_curve.fpr.map((fpr, i) => ({
-                    fpr,
-                    tpr: result.roc_curve!.tpr[i],
-                  }))}
-                  margin={{ top: 5, right: 10, bottom: 20, left: 10 }}
-                >
+                <LineChart margin={{ top: 5, right: 10, bottom: 20, left: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
                   <XAxis
                     dataKey="fpr"
@@ -369,7 +556,6 @@ export function ResultsView() {
                     label={{ value: "False Positive Rate", position: "bottom", fontSize: 10, fill: "var(--color-text-tertiary)" }}
                   />
                   <YAxis
-                    dataKey="tpr"
                     type="number"
                     domain={[0, 1]}
                     tick={{ fontSize: 10, fill: "var(--color-text-tertiary)" }}
@@ -385,16 +571,53 @@ export function ResultsView() {
                     formatter={(v) => Number(v).toFixed(3)}
                   />
                   <Line
+                    data={result.roc_curve.fpr.map((fpr, i) => ({
+                      fpr,
+                      original: result.roc_curve!.tpr[i],
+                    }))}
                     type="monotone"
-                    dataKey="tpr"
+                    dataKey="original"
+                    name={`Original${result.roc_curve.auc != null ? ` (AUC ${result.roc_curve.auc.toFixed(3)})` : ""}`}
                     stroke="#8b5cf6"
                     strokeWidth={2}
                     dot={false}
                   />
+                  {showOverlay && (
+                    <Line
+                      data={overfitFixResult.roc_curve!.fpr.map((fpr, i) => ({
+                        fpr,
+                        regularized: overfitFixResult.roc_curve!.tpr[i],
+                      }))}
+                      type="monotone"
+                      dataKey="regularized"
+                      name={`Regularized${overfitFixResult.roc_curve!.auc != null ? ` (AUC ${overfitFixResult.roc_curve!.auc.toFixed(3)})` : ""}`}
+                      stroke="#10b981"
+                      strokeWidth={2}
+                      strokeDasharray="6 3"
+                      dot={false}
+                    />
+                  )}
                 </LineChart>
               </ResponsiveContainer>
+              {showOverlay && (
+                <div className="flex gap-4 mt-2">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-4 h-[2px] bg-[#8b5cf6] rounded-full" />
+                    <span className="text-[11px] text-text-secondary">
+                      Original{result.roc_curve.auc != null && <span className="text-text-tertiary ml-1">AUC {result.roc_curve.auc.toFixed(3)}</span>}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-4 h-[2px] bg-[#10b981] rounded-full" style={{ backgroundImage: "repeating-linear-gradient(90deg, #10b981 0 6px, transparent 6px 9px)" }} />
+                    <span className="text-[11px] text-text-secondary">
+                      Regularized{overfitFixResult.roc_curve!.auc != null && <span className="text-text-tertiary ml-1">AUC {overfitFixResult.roc_curve!.auc.toFixed(3)}</span>}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {/* Residual Plot (regression) */}
           {isRegression && result.residuals && (
@@ -551,6 +774,9 @@ export function ResultsView() {
             )}
             <RetrainPanel result={result} onRetrained={() => setSelectedIdx(0)} />
           </div>
+
+          {/* Next steps */}
+          <NextSteps result={result} />
         </motion.div>
           </>
         )}
@@ -566,11 +792,28 @@ function ComparisonTable({
   results: import("../types/data").TrainResult[];
   onSelect: (idx: number) => void;
 }) {
+  const removeTrainingResult = useAppStore((s) => s.removeTrainingResult);
   const taskType = results[0]?.task;
   const isClassification = taskType === "classification";
   const isRegression = taskType === "regression";
   const isClustering = taskType === "clustering";
   const [chartHeight, chartSize, setChartSize] = useChartSize("M");
+  // Check if any results have hyperparams worth showing
+  const hasHyperparams = results.some((r) => r.hyperparams && Object.keys(r.hyperparams).length > 0);
+
+  // ROC legend toggle: empty set = show all, otherwise show only selected indices
+  const [visibleRocSet, setVisibleRocSet] = useState<Set<number>>(new Set());
+  const toggleRocVisibility = (idx: number) => {
+    setVisibleRocSet((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) {
+        next.delete(idx);
+      } else {
+        next.add(idx);
+      }
+      return next;
+    });
+  };
 
   // Find best result for highlighting
   const getBestIdx = () => {
@@ -621,8 +864,11 @@ function ComparisonTable({
               {results.some((r) => r.cv_scores) && (
                 <th className="px-3 py-2 text-right text-text-tertiary font-medium">CV Score</th>
               )}
+              {hasHyperparams && (
+                <th className="px-3 py-2 text-left text-text-tertiary font-medium">Hyperparams</th>
+              )}
               <th className="px-3 py-2 text-right text-text-tertiary font-medium">Features</th>
-              <th className="px-3 py-2 w-[60px]" />
+              <th className="px-3 py-2 w-[80px]" />
             </tr>
           </thead>
           <tbody>
@@ -636,7 +882,7 @@ function ComparisonTable({
                   }`}
                 >
                   <td className="px-3 py-2.5 font-medium text-text-primary">
-                    {ALGO_LABELS[r.algorithm] ?? r.algorithm}
+                    <EditableNickname result={r} resultIndex={i} allResults={results} />
                     {isBest && (
                       <span className="ml-2 text-[9px] text-plume-600 dark:text-plume-400 font-normal">best</span>
                     )}
@@ -645,15 +891,27 @@ function ComparisonTable({
                     <>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
                         {(r.metrics.accuracy * 100).toFixed(1)}%
+                        {r.train_metrics?.accuracy != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.accuracy * 100).toFixed(1)}%</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                         {(r.metrics.precision * 100).toFixed(1)}%
+                        {r.train_metrics?.precision != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.precision * 100).toFixed(1)}%</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                         {(r.metrics.recall * 100).toFixed(1)}%
+                        {r.train_metrics?.recall != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.recall * 100).toFixed(1)}%</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                         {(r.metrics.f1 * 100).toFixed(1)}%
+                        {r.train_metrics?.f1 != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.f1 * 100).toFixed(1)}%</span>
+                        )}
                       </td>
                     </>
                   )}
@@ -661,12 +919,21 @@ function ComparisonTable({
                     <>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
                         {r.metrics.r2.toFixed(3)}
+                        {r.train_metrics?.r2 != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.r2.toFixed(3)}</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                         {r.metrics.mae.toFixed(3)}
+                        {r.train_metrics?.mae != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.mae.toFixed(3)}</span>
+                        )}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
                         {r.metrics.rmse.toFixed(3)}
+                        {r.train_metrics?.rmse != null && (
+                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.rmse.toFixed(3)}</span>
+                        )}
                       </td>
                     </>
                   )}
@@ -691,16 +958,41 @@ function ComparisonTable({
                       }
                     </td>
                   )}
+                  {hasHyperparams && (
+                    <td className="px-3 py-2.5 text-text-tertiary">
+                      {r.hyperparams && Object.keys(r.hyperparams).length > 0 ? (
+                        <span className="text-[10px] leading-relaxed">
+                          {Object.entries(r.hyperparams).map(([k, v]) => (
+                            <span key={k} className="inline-block mr-2">
+                              <span className="text-text-tertiary">{HYPERPARAM_SHORT_LABELS[k] ?? k}</span>{" "}
+                              <span className="text-text-secondary tabular-nums">{v}</span>
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-text-tertiary">defaults</span>
+                      )}
+                    </td>
+                  )}
                   <td className="px-3 py-2.5 text-right tabular-nums text-text-tertiary">
                     {r.features_used?.length ?? "—"}
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <button
-                      onClick={() => onSelect(i)}
-                      className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
-                    >
-                      View
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => onSelect(i)}
+                        className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
+                      >
+                        View
+                      </button>
+                      <button
+                        onClick={() => removeTrainingResult(i)}
+                        className="text-[11px] text-text-tertiary hover:text-red-500 cursor-pointer transition-colors duration-150"
+                        title="Remove this run"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );
@@ -744,20 +1036,23 @@ function ComparisonTable({
               />
               {(() => {
                 const colors = ["#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#6366f1", "#84cc16"];
-                return results
-                  .filter((r) => r.roc_curve)
-                  .map((r, i) => {
+                const withRoc = results.filter((r) => r.roc_curve);
+                const showAll = visibleRocSet.size === 0;
+                return withRoc.map((r, i) => {
+                    if (!showAll && !visibleRocSet.has(i)) return null;
+                    const label = getRunLabel(r, results);
+                    const dataKey = `run_${i}`;
                     const data = r.roc_curve!.fpr.map((fpr, j) => ({
                       fpr,
-                      [r.algorithm]: r.roc_curve!.tpr[j],
+                      [dataKey]: r.roc_curve!.tpr[j],
                     }));
                     return (
                       <Line
-                        key={r.algorithm}
+                        key={`${dataKey}-${r.trainedAt ?? i}`}
                         data={data}
                         type="monotone"
-                        dataKey={r.algorithm}
-                        name={`${ALGO_LABELS[r.algorithm] ?? r.algorithm}${r.roc_curve!.auc != null ? ` (AUC ${r.roc_curve!.auc.toFixed(3)})` : ""}`}
+                        dataKey={dataKey}
+                        name={`${label}${r.roc_curve!.auc != null ? ` (AUC ${r.roc_curve!.auc.toFixed(3)})` : ""}`}
                         stroke={colors[i % colors.length]}
                         strokeWidth={2}
                         dot={false}
@@ -767,22 +1062,48 @@ function ComparisonTable({
               })()}
             </LineChart>
           </ResponsiveContainer>
-          <div className="flex flex-wrap gap-4 mt-2">
+          <div className="flex flex-wrap gap-3 mt-2">
             {(() => {
               const colors = ["#8b5cf6", "#06b6d4", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#6366f1", "#84cc16"];
-              return results
-                .filter((r) => r.roc_curve)
-                .map((r, i) => (
-                  <div key={r.algorithm} className="flex items-center gap-1.5">
-                    <div className="w-3 h-[2px] rounded-full" style={{ backgroundColor: colors[i % colors.length] }} />
-                    <span className="text-[11px] text-text-secondary">
-                      {ALGO_LABELS[r.algorithm] ?? r.algorithm}
-                      {r.roc_curve!.auc != null && (
-                        <span className="text-text-tertiary ml-1">AUC {r.roc_curve!.auc.toFixed(3)}</span>
-                      )}
-                    </span>
-                  </div>
-                ));
+              const withRoc = results.filter((r) => r.roc_curve);
+              const showAll = visibleRocSet.size === 0;
+              return (
+                <>
+                  {withRoc.map((r, i) => {
+                    const isVisible = showAll || visibleRocSet.has(i);
+                    return (
+                      <button
+                        key={`${i}-${r.trainedAt}`}
+                        onClick={() => toggleRocVisibility(i)}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-default)] border transition-all duration-150 cursor-pointer ${
+                          isVisible
+                            ? "border-border bg-surface"
+                            : "border-transparent opacity-40 hover:opacity-70"
+                        }`}
+                      >
+                        <div
+                          className="w-3 h-[2px] rounded-full shrink-0"
+                          style={{ backgroundColor: colors[i % colors.length] }}
+                        />
+                        <span className="text-[11px] text-text-secondary">
+                          {getRunLabel(r, results)}
+                          {r.roc_curve!.auc != null && (
+                            <span className="text-text-tertiary ml-1">AUC {r.roc_curve!.auc.toFixed(3)}</span>
+                          )}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {visibleRocSet.size > 0 && (
+                    <button
+                      onClick={() => setVisibleRocSet(new Set())}
+                      className="text-[10px] text-text-tertiary hover:text-text-primary cursor-pointer px-1"
+                    >
+                      Show all
+                    </button>
+                  )}
+                </>
+              );
             })()}
           </div>
         </div>
@@ -870,7 +1191,515 @@ function SharedFeatureImportance({ results }: { results: import("../types/data")
   );
 }
 
-function MetricCard({ label, value }: { label: string; value: string }) {
+/** Algorithm-specific regularization levels for overfitting (mild → strong) */
+interface RegLevel {
+  label: string;
+  hyperparams: Record<string, number>;
+  description: string;
+}
+
+const OVERFIT_RECOMMENDATIONS: Record<string, {
+  tips: string[];
+  levels: RegLevel[];
+}> = {
+  random_forest: {
+    tips: [
+      "Reduce max depth to prevent trees from memorizing individual examples",
+      "Increase min samples to split so each decision requires more evidence",
+      "Use fewer trees — more trees rarely cause overfitting, but shallower ones generalize better",
+    ],
+    levels: [
+      { label: "Mild", hyperparams: { n_estimators: 100, max_depth: 12, min_samples_split: 5 }, description: "Depth 12, min split 5" },
+      { label: "Moderate", hyperparams: { n_estimators: 100, max_depth: 8, min_samples_split: 10 }, description: "Depth 8, min split 10" },
+      { label: "Strong", hyperparams: { n_estimators: 80, max_depth: 5, min_samples_split: 20 }, description: "Depth 5, min split 20" },
+      { label: "Very strong", hyperparams: { n_estimators: 60, max_depth: 3, min_samples_split: 30 }, description: "Depth 3, min split 30" },
+    ],
+  },
+  xgboost: {
+    tips: [
+      "Reduce max depth — XGBoost trees are often too deep by default",
+      "Lower the learning rate and use more trees for gentler learning",
+      "Reduce the number of trees to stop the model from over-fitting to residuals",
+    ],
+    levels: [
+      { label: "Mild", hyperparams: { n_estimators: 200, max_depth: 5, learning_rate: 0.08 }, description: "Depth 5, lr 0.08" },
+      { label: "Moderate", hyperparams: { n_estimators: 200, max_depth: 4, learning_rate: 0.05 }, description: "Depth 4, lr 0.05" },
+      { label: "Strong", hyperparams: { n_estimators: 150, max_depth: 3, learning_rate: 0.03 }, description: "Depth 3, lr 0.03" },
+      { label: "Very strong", hyperparams: { n_estimators: 100, max_depth: 2, learning_rate: 0.01 }, description: "Depth 2, lr 0.01" },
+    ],
+  },
+  lightgbm: {
+    tips: [
+      "Reduce num_leaves — this is the primary complexity control in LightGBM",
+      "Lower the learning rate and increase the number of trees",
+      "Set a max depth limit to prevent overly specific leaf nodes",
+    ],
+    levels: [
+      { label: "Mild", hyperparams: { n_estimators: 200, max_depth: 8, learning_rate: 0.08, num_leaves: 25 }, description: "Leaves 25, depth 8, lr 0.08" },
+      { label: "Moderate", hyperparams: { n_estimators: 200, max_depth: 6, learning_rate: 0.05, num_leaves: 20 }, description: "Leaves 20, depth 6, lr 0.05" },
+      { label: "Strong", hyperparams: { n_estimators: 150, max_depth: 4, learning_rate: 0.03, num_leaves: 15 }, description: "Leaves 15, depth 4, lr 0.03" },
+      { label: "Very strong", hyperparams: { n_estimators: 100, max_depth: 3, learning_rate: 0.01, num_leaves: 10 }, description: "Leaves 10, depth 3, lr 0.01" },
+    ],
+  },
+  logistic_regression: {
+    tips: [
+      "Decrease C to apply stronger regularization (smaller C = more regularization)",
+      "Consider reducing the number of features — too many can cause overfitting in linear models",
+    ],
+    levels: [
+      { label: "Mild", hyperparams: { C: 0.5, max_iter: 1000 }, description: "C=0.5" },
+      { label: "Moderate", hyperparams: { C: 0.1, max_iter: 1000 }, description: "C=0.1" },
+      { label: "Strong", hyperparams: { C: 0.01, max_iter: 1000 }, description: "C=0.01" },
+    ],
+  },
+  linear_regression: {
+    tips: [
+      "Linear regression has no built-in regularization — consider switching to a different algorithm",
+      "Remove features that may be leaking information or are highly correlated",
+    ],
+    levels: [],
+  },
+};
+
+function OverfitWarning({
+  trainPct,
+  testPct,
+  metric,
+  gap,
+  result,
+  onFixApplied,
+}: {
+  trainPct: string;
+  testPct: string;
+  metric: string;
+  gap: number;
+  result: TrainResult;
+  onFixApplied: (fixResult: TrainResult) => void;
+}) {
+  const [retraining, setRetraining] = useState(false);
+  const [attempts, setAttempts] = useState<{ level: RegLevel; result: TrainResult; gap: number }[]>([]);
+  const [bestResult, setBestResult] = useState<TrainResult | null>(null);
+  const addTrainingResult = useAppStore((s) => s.addTrainingResult);
+  const trainingResults = useAppStore((s) => s.trainingResults);
+  const recs = OVERFIT_RECOMMENDATIONS[result.algorithm];
+
+  const severity = gap >= 0.25 ? "severe" : gap >= 0.15 ? "moderate" : "mild";
+  const isClassification = result.task === "classification";
+
+  const getGap = (r: TrainResult) => {
+    const trainScore = isClassification ? r.train_metrics?.accuracy : r.train_metrics?.r2;
+    const testScore = isClassification ? r.metrics.accuracy : r.metrics.r2;
+    return (trainScore ?? 0) - (testScore ?? 0);
+  };
+
+  const getTestScore = (r: TrainResult) => {
+    return isClassification ? r.metrics.accuracy : r.metrics.r2;
+  };
+
+  const handleAutoRegularize = async () => {
+    if (!recs || recs.levels.length === 0) return;
+    setRetraining(true);
+    setAttempts([]);
+    setBestResult(null);
+
+    const algoLabel = ALGO_LABELS[result.algorithm] ?? result.algorithm;
+    const allAttempts: { level: RegLevel; result: TrainResult; gap: number }[] = [];
+    let best: TrainResult | null = null;
+    let bestTestScore = getTestScore(result);
+    let prevGap = gap;
+
+    for (const level of recs.levels) {
+      try {
+        const newResult = await invoke<TrainResult>("train_model", {
+          task: result.task,
+          target: result.target ?? null,
+          features: result.features_used ?? [],
+          algorithm: result.algorithm,
+          nClusters: null,
+          hyperparams: level.hyperparams,
+          useCv: !!result.cv_scores,
+          cvFolds: result.cv_scores?.folds ?? 5,
+        });
+        newResult.target = result.target;
+        newResult.hyperparams = level.hyperparams;
+
+        const newGap = getGap(newResult);
+        const newTestScore = getTestScore(newResult);
+
+        allAttempts.push({ level, result: newResult, gap: newGap });
+        setAttempts([...allAttempts]);
+
+        // Track the best result (lowest gap while maintaining reasonable test performance)
+        if (newTestScore >= bestTestScore * 0.95 && newGap < prevGap) {
+          best = newResult;
+          bestTestScore = newTestScore;
+          prevGap = newGap;
+        }
+
+        // Stop if gap is resolved or getting worse
+        if (newGap < 0.05) break;
+        if (newGap > prevGap + 0.02) break; // getting worse, stop
+      } catch (err) {
+        console.error(`Regularization level ${level.label} failed:`, err);
+      }
+    }
+
+    // Add the best result to training results
+    if (best) {
+      const regPattern = new RegExp(`^${algoLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(regularized`);
+      const existingCount = trainingResults.filter((r) => r.nickname && regPattern.test(r.nickname)).length;
+      best.nickname = existingCount === 0
+        ? `${algoLabel} (regularized)`
+        : `${algoLabel} (regularized ${existingCount + 1})`;
+      addTrainingResult(best);
+      onFixApplied(best);
+      setBestResult(best);
+    } else if (allAttempts.length > 0) {
+      // No improvement — still add the mildest attempt for comparison
+      const mildest = allAttempts[0].result;
+      const regPattern = new RegExp(`^${algoLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(regularized`);
+      const existingCount = trainingResults.filter((r) => r.nickname && regPattern.test(r.nickname)).length;
+      mildest.nickname = existingCount === 0
+        ? `${algoLabel} (regularized)`
+        : `${algoLabel} (regularized ${existingCount + 1})`;
+      addTrainingResult(mildest);
+      onFixApplied(mildest);
+      setBestResult(mildest);
+    }
+
+    setRetraining(false);
+  };
+
+  const fixResult = bestResult;
+
+  // Build before/after comparison data
+  const getComparison = () => {
+    if (!fixResult) return null;
+
+    const pctFmt = (v: number) => `${(v * 100).toFixed(1)}%`;
+    const decFmt = (v: number) => v.toFixed(3);
+
+    const oldTrainScore = isClassification ? result.train_metrics!.accuracy : result.train_metrics!.r2;
+    const oldTestScore = isClassification ? result.metrics.accuracy : result.metrics.r2;
+    const newTrainScore = isClassification ? fixResult.train_metrics?.accuracy : fixResult.train_metrics?.r2;
+    const newTestScore = isClassification ? fixResult.metrics.accuracy : fixResult.metrics.r2;
+    const oldGap = oldTrainScore - oldTestScore;
+    const newGap = (newTrainScore ?? 0) - (newTestScore ?? 0);
+
+    type Row = { label: string; oldVal: number; newVal: number; format: (v: number) => string; higherIsBetter: boolean };
+    const rows: Row[] = [];
+
+    if (isClassification) {
+      rows.push(
+        { label: "Accuracy", oldVal: result.metrics.accuracy, newVal: fixResult.metrics.accuracy, format: pctFmt, higherIsBetter: true },
+        { label: "Precision", oldVal: result.metrics.precision, newVal: fixResult.metrics.precision, format: pctFmt, higherIsBetter: true },
+        { label: "Recall", oldVal: result.metrics.recall, newVal: fixResult.metrics.recall, format: pctFmt, higherIsBetter: true },
+        { label: "F1", oldVal: result.metrics.f1, newVal: fixResult.metrics.f1, format: pctFmt, higherIsBetter: true },
+      );
+    } else {
+      rows.push(
+        { label: "R²", oldVal: result.metrics.r2, newVal: fixResult.metrics.r2, format: decFmt, higherIsBetter: true },
+        { label: "MAE", oldVal: result.metrics.mae, newVal: fixResult.metrics.mae, format: decFmt, higherIsBetter: false },
+        { label: "RMSE", oldVal: result.metrics.rmse, newVal: fixResult.metrics.rmse, format: decFmt, higherIsBetter: false },
+      );
+    }
+
+    return { rows, oldGap, newGap };
+  };
+
+  return (
+    <div className="bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-700 rounded-[var(--radius-default)] px-4 py-3">
+      <p className="text-[12px] font-medium text-amber-700 dark:text-amber-400 mb-1">
+        {severity === "severe" ? "Significant" : severity === "moderate" ? "Moderate" : "Mild"} overfitting detected
+      </p>
+      <p className="text-[12px] text-amber-700/80 dark:text-amber-300/80 leading-relaxed mb-3">
+        Your model scores {trainPct}% {metric} on training data but only {testPct}% on new data.
+        {severity === "severe"
+          ? " This is a large gap — the model is heavily memorizing training examples."
+          : severity === "moderate"
+            ? " The model is learning some noise from the training data along with the real patterns."
+            : " There's a small gap between training and test performance."
+        }
+      </p>
+
+      {/* Algorithm-specific recommendations */}
+      {recs && (
+        <div className="mb-3">
+          <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400 mb-1.5">
+            Recommendations for {ALGO_LABELS[result.algorithm] ?? result.algorithm}:
+          </p>
+          <ul className="flex flex-col gap-1">
+            {recs.tips.map((tip, i) => (
+              <li key={i} className="text-[11px] text-amber-700/80 dark:text-amber-300/80 leading-relaxed flex gap-1.5">
+                <span className="shrink-0 mt-px">•</span>
+                <span>{tip}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Auto-regularize button */}
+      {recs && recs.levels.length > 0 && !fixResult && (
+        <div className="pt-2 border-t border-amber-200 dark:border-amber-700/50">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleAutoRegularize}
+              disabled={retraining}
+              className="px-3 py-1.5 text-[11px] font-medium rounded-[var(--radius-default)] bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50 transition-colors duration-200 cursor-pointer"
+            >
+              {retraining ? (
+                <span className="flex items-center gap-1.5">
+                  <motion.span
+                    className="inline-block w-1.5 h-1.5 rounded-full bg-white/60"
+                    animate={{ scale: [1, 1.3, 1] }}
+                    transition={{ duration: 1, repeat: Infinity }}
+                  />
+                  Testing regularization levels ({attempts.length}/{recs.levels.length})...
+                </span>
+              ) : (
+                "Auto-regularize"
+              )}
+            </button>
+            <span className="text-[10px] text-amber-700/60 dark:text-amber-300/60">
+              Tries {recs.levels.length} levels of regularization and picks the best
+            </span>
+          </div>
+          {/* Live progress during iteration */}
+          {retraining && attempts.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1">
+              {attempts.map((a, i) => {
+                const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+                return (
+                  <div key={i} className="flex items-center gap-2 text-[10px]">
+                    <span className="text-amber-700/60 dark:text-amber-300/60 w-[70px] shrink-0">{a.level.label}</span>
+                    <span className="text-text-secondary tabular-nums">gap {pct(a.gap)}</span>
+                    <span className="text-text-tertiary">·</span>
+                    <span className="text-text-tertiary tabular-nums">{a.level.description}</span>
+                    {a.gap < 0.1 && <span className="text-emerald-600 dark:text-emerald-400 font-medium">resolved</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Summary of all attempts */}
+      {!retraining && attempts.length > 1 && fixResult && (
+        <div className="pt-2 mt-1 border-t border-amber-200 dark:border-amber-700/50 mb-2">
+          <p className="text-[10px] text-text-tertiary mb-1.5">Regularization levels tested:</p>
+          <div className="flex flex-col gap-1">
+            {attempts.map((a, i) => {
+              const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+              const testScore = getTestScore(a.result);
+              const isBest = a.result === fixResult;
+              return (
+                <div key={i} className={`flex items-center gap-2 text-[10px] ${isBest ? "font-medium" : ""}`}>
+                  <span className={`w-[70px] shrink-0 ${isBest ? "text-plume-600 dark:text-plume-400" : "text-text-tertiary"}`}>
+                    {a.level.label}
+                  </span>
+                  <span className="text-text-secondary tabular-nums">gap {pct(a.gap)}</span>
+                  <span className="text-text-tertiary">·</span>
+                  <span className="text-text-secondary tabular-nums">
+                    {isClassification ? "accuracy" : "R²"} {isClassification ? pct(testScore) : testScore.toFixed(3)}
+                  </span>
+                  {isBest && <span className="text-plume-600 dark:text-plume-400">← best</span>}
+                  {a.gap < 0.1 && !isBest && <span className="text-emerald-600/60">resolved</span>}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Inline before/after comparison */}
+      {fixResult && (() => {
+        const comparison = getComparison();
+        if (!comparison) return null;
+        const { rows, oldGap, newGap } = comparison;
+        const gapImproved = newGap < oldGap;
+        const gapFixed = newGap < 0.1;
+        const pctFmt = (v: number) => `${(v * 100).toFixed(1)}%`;
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className="pt-3 mt-1 border-t border-amber-200 dark:border-amber-700/50"
+          >
+            {/* Overfit gap comparison */}
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1">
+                <p className="text-[10px] text-text-tertiary mb-1">Train/test gap</p>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-text-tertiary">Before</span>
+                    <span className="text-[13px] font-semibold text-amber-700 dark:text-amber-400 tabular-nums">{pctFmt(oldGap)}</span>
+                  </div>
+                  <span className="text-text-tertiary">→</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-text-tertiary">After</span>
+                    <span className={`text-[13px] font-semibold tabular-nums ${
+                      gapFixed
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : gapImproved
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-red-600 dark:text-red-400"
+                    }`}>
+                      {pctFmt(newGap)}
+                    </span>
+                  </div>
+                  {gapFixed && (
+                    <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                      Resolved
+                    </span>
+                  )}
+                  {!gapFixed && gapImproved && (
+                    <span className="text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/10 px-1.5 py-0.5 rounded">
+                      Improved
+                    </span>
+                  )}
+                  {!gapImproved && (
+                    <span className="text-[10px] font-medium text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 px-1.5 py-0.5 rounded">
+                      No improvement
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Metric-by-metric comparison */}
+            <p className="text-[10px] text-text-tertiary mb-1.5">Test performance (before → after regularization)</p>
+            <div className="flex flex-col gap-1">
+              {rows.map((m) => {
+                const diff = m.newVal - m.oldVal;
+                const improved = m.higherIsBetter ? diff > 0 : diff < 0;
+                const unchanged = Math.abs(diff) < 0.0001;
+                return (
+                  <div key={m.label} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-[60px] text-text-tertiary text-right shrink-0">{m.label}</span>
+                    <span className="text-text-secondary tabular-nums">{m.format(m.oldVal)}</span>
+                    <span className="text-text-tertiary">→</span>
+                    <span className="text-text-primary font-medium tabular-nums">{m.format(m.newVal)}</span>
+                    <span className={`text-[10px] tabular-nums font-medium ${
+                      unchanged
+                        ? "text-text-tertiary"
+                        : improved
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-red-500 dark:text-red-400"
+                    }`}>
+                      {unchanged ? "—" : improved ? "↑" : "↓"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Verdict */}
+            <p className={`text-[11px] mt-2.5 font-medium leading-relaxed ${
+              gapFixed
+                ? "text-emerald-700 dark:text-emerald-400"
+                : gapImproved
+                  ? "text-amber-700 dark:text-amber-400"
+                  : "text-red-700 dark:text-red-400"
+            }`}>
+              {gapFixed
+                ? "Regularization resolved the overfitting. The new model generalizes well to unseen data."
+                : gapImproved
+                  ? "Regularization reduced the gap but some overfitting remains. You could try the Tune & Retrain panel to adjust further."
+                  : "Regularization didn't help here. Consider removing noisy features, adding more data, or trying a simpler algorithm."
+              }
+            </p>
+          </motion.div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function getNextSteps(result: TrainResult): { text: string; priority: "high" | "medium" | "low" }[] {
+  const steps: { text: string; priority: "high" | "medium" | "low" }[] = [];
+  const isClassification = result.task === "classification";
+  const isRegression = result.task === "regression";
+  const isClustering = result.task === "clustering";
+
+  // High priority suggestions
+  if (result.leakage_warnings?.length) {
+    steps.push({ text: "Remove leaked features and retrain — your current metrics may be unrealistically high.", priority: "high" });
+  }
+  if (result.imbalance_warning && result.imbalance_warning.minority_pct < 10) {
+    steps.push({ text: "Your minority class is very small. Consider collecting more data for underrepresented classes.", priority: "high" });
+  }
+
+  // Performance-based suggestions
+  if (isClassification && result.metrics.accuracy < 0.7) {
+    steps.push({ text: "Accuracy is below 70%. Try adding more features, engineering new ones in the Shape tab, or switching algorithms.", priority: "high" });
+  }
+  if (isRegression && result.metrics.r2 < 0.5) {
+    steps.push({ text: "R² is below 0.5 — the model explains less than half the variation. Try different features or a non-linear algorithm like Random Forest.", priority: "high" });
+  }
+
+  // Medium priority
+  if (!result.cv_scores) {
+    steps.push({ text: "Enable cross-validation for a more reliable performance estimate — a single train/test split can be lucky or unlucky.", priority: "medium" });
+  }
+  if (result.feature_importance?.length && result.feature_importance.length > 5) {
+    const lowImportance = result.feature_importance.filter((f) => f.importance < 0.01);
+    if (lowImportance.length > 0) {
+      steps.push({ text: `${lowImportance.length} feature${lowImportance.length > 1 ? "s have" : " has"} near-zero importance. Removing them may simplify the model without losing accuracy.`, priority: "medium" });
+    }
+  }
+
+  // Overfitting-related (only if not already shown in overfit warning)
+  if (result.train_metrics) {
+    const trainScore = isClassification ? result.train_metrics.accuracy : result.train_metrics.r2;
+    const testScore = isClassification ? result.metrics.accuracy : result.metrics.r2;
+    if (trainScore != null && testScore != null && trainScore - testScore > 0.05 && trainScore - testScore < 0.1) {
+      steps.push({ text: "There's a small gap between training and test performance. Cross-validation can help confirm whether this is a concern.", priority: "low" });
+    }
+  }
+
+  // Clustering
+  if (isClustering && result.metrics.silhouette != null && result.metrics.silhouette < 0.25) {
+    steps.push({ text: "The silhouette score is low, suggesting clusters aren't well-separated. Try different numbers of groups or standardize your features in the Shape tab.", priority: "medium" });
+  }
+
+  // Good results encouragement
+  if (isClassification && result.metrics.accuracy >= 0.95) {
+    steps.push({ text: "Accuracy is very high — double-check for data leakage. If the data is clean, this is a strong model.", priority: "low" });
+  }
+
+  return steps;
+}
+
+function NextSteps({ result }: { result: TrainResult }) {
+  const steps = getNextSteps(result).slice(0, 5);
+  if (steps.length === 0) return null;
+
+  const dotColor = {
+    high: "bg-red-500",
+    medium: "bg-amber-400",
+    low: "bg-gray-400 dark:bg-gray-500",
+  };
+
+  return (
+    <div>
+      <h3 className="text-[12px] text-text-secondary mb-2">Next steps</h3>
+      <div className="flex flex-col gap-1.5">
+        {steps.map((step, i) => (
+          <div key={i} className="flex items-start gap-2">
+            <span className={`mt-1.5 w-[6px] h-[6px] rounded-full shrink-0 ${dotColor[step.priority]}`} />
+            <span className="text-[11px] text-text-secondary leading-relaxed">{step.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, trainValue }: { label: string; value: string; trainValue?: string }) {
   const explanation = METRIC_EXPLANATIONS[label];
   const [showTooltip, setShowTooltip] = useState(false);
   return (
@@ -896,6 +1725,11 @@ function MetricCard({ label, value }: { label: string; value: string }) {
         )}
       </p>
       <p className="text-[18px] font-semibold text-text-primary tabular-nums">{value}</p>
+      {trainValue && (
+        <p className="text-[10px] text-text-tertiary mt-1 tabular-nums">
+          <span className="text-text-tertiary/70">train</span> {trainValue}
+        </p>
+      )}
     </div>
   );
 }
@@ -987,6 +1821,25 @@ function ReportExportButton({ results }: { results: TrainResult[] }) {
 
     setExporting(true);
     try {
+      // Try to compute SHAP for the first supervised result
+      let shapData = null;
+      const supervisedResult = results.find((r) => r.task !== "clustering" && r.target);
+      if (supervisedResult) {
+        try {
+          const resp = await invoke<{ explanations: ShapExplanation[] }>("compute_shap", {
+            task: supervisedResult.task,
+            target: supervisedResult.target ?? null,
+            features: supervisedResult.features_used ?? [],
+            algorithm: supervisedResult.algorithm,
+            hyperparams: supervisedResult.hyperparams ?? {},
+            nSamples: 3,
+          });
+          shapData = resp.explanations;
+        } catch {
+          // SHAP not available — export without it
+        }
+      }
+
       await invoke("generate_report", {
         results: results.map((r) => ({
           task: r.task,
@@ -998,6 +1851,7 @@ function ReportExportButton({ results }: { results: TrainResult[] }) {
           test_size: r.test_size,
           cv_scores: r.cv_scores,
         })),
+        shapData,
         outputPath: filePath,
       });
     } catch (err) {
@@ -1145,27 +1999,27 @@ function ShapButton({ result }: { result: TrainResult }) {
   );
 }
 
-const HYPERPARAM_DEFS: Record<string, { key: string; label: string; default: number; min: number; max: number; step: number }[]> = {
+const HYPERPARAM_DEFS: Record<string, { key: string; label: string; tooltip: string; default: number; min: number; max: number; step: number }[]> = {
   random_forest: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 0, min: 0, max: 100, step: 1 },
-    { key: "min_samples_split", label: "Min samples to split", default: 2, min: 2, max: 50, step: 1 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: 0, min: 0, max: 100, step: 1 },
+    { key: "min_samples_split", label: "Min samples to split", tooltip: "Minimum number of examples needed before a tree can make a new decision. Higher values make the model more conservative.", default: 2, min: 2, max: 50, step: 1 },
   ],
   logistic_regression: [
-    { key: "C", label: "Regularization (C)", default: 1.0, min: 0.01, max: 100, step: 0.1 },
-    { key: "max_iter", label: "Max iterations", default: 1000, min: 100, max: 10000, step: 100 },
+    { key: "C", label: "Regularization (C)", tooltip: "Controls how much the model is allowed to fit the training data. Lower values prevent overfitting by keeping the model simpler.", default: 1.0, min: 0.01, max: 100, step: 0.1 },
+    { key: "max_iter", label: "Max iterations", tooltip: "Maximum number of times the algorithm cycles through the data to find the best fit.", default: 1000, min: 100, max: 10000, step: 100 },
   ],
   linear_regression: [],
   xgboost: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 6, min: 0, max: 20, step: 1 },
-    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: 6, min: 0, max: 20, step: 1 },
+    { key: "learning_rate", label: "Learning rate", tooltip: "How much each new tree corrects the previous ones. Smaller values learn more carefully but need more trees to compensate.", default: 0.1, min: 0.01, max: 1, step: 0.01 },
   ],
   lightgbm: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: -1, min: -1, max: 50, step: 1 },
-    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
-    { key: "num_leaves", label: "Num leaves", default: 31, min: 2, max: 256, step: 1 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: -1, min: -1, max: 50, step: 1 },
+    { key: "learning_rate", label: "Learning rate", tooltip: "How much each new tree corrects the previous ones. Smaller values learn more carefully but need more trees to compensate.", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+    { key: "num_leaves", label: "Num leaves", tooltip: "Maximum number of leaf nodes per tree. More leaves capture more detail but increase the risk of memorizing data.", default: 31, min: 2, max: 256, step: 1 },
   ],
 };
 
@@ -1176,6 +2030,7 @@ function RetrainPanel({ result, onRetrained }: { result: TrainResult; onRetraine
   // Capture the original result at first render so comparisons stay stable after selectedIdx changes
   const [originalResult] = useState<TrainResult>(result);
   const addTrainingResult = useAppStore((s) => s.addTrainingResult);
+  const [hpTooltip, setHpTooltip] = useState<string | null>(null);
   const defs = HYPERPARAM_DEFS[originalResult.algorithm] ?? [];
 
   // Initialize from the original result's hyperparams
@@ -1274,7 +2129,23 @@ function RetrainPanel({ result, onRetrained }: { result: TrainResult; onRetraine
               <div className="grid grid-cols-2 gap-3 mb-4">
                 {defs.map((def) => (
                   <div key={def.key} className="flex flex-col gap-1">
-                    <label className="text-[10px] text-text-tertiary">{def.label}</label>
+                    <label className="text-[10px] text-text-tertiary">
+                      {def.label}
+                      <span className="relative inline-block ml-1">
+                        <span
+                          className="text-text-tertiary/60 cursor-help hover:text-plume-500 transition-colors duration-150"
+                          onMouseEnter={() => setHpTooltip(def.key)}
+                          onMouseLeave={() => setHpTooltip(null)}
+                        >
+                          ?
+                        </span>
+                        {hpTooltip === def.key && (
+                          <span className="absolute z-10 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-[220px] px-3 py-2 text-[11px] leading-relaxed text-text-primary bg-surface border border-border rounded-[var(--radius-default)] shadow-md pointer-events-none">
+                            {def.tooltip}
+                          </span>
+                        )}
+                      </span>
+                    </label>
                     <input
                       type="number"
                       min={def.min}

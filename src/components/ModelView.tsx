@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../stores/appStore";
-import type { ColumnProfile, TrainResult } from "../types/data";
+import type { AutoTuneResult, ColumnProfile, TrainResult } from "../types/data";
 
 type Task = "classification" | "regression" | "clustering" | null;
 
@@ -29,6 +29,7 @@ const ALGO_OPTIONS: Record<string, { value: string; label: string }[]> = {
 interface HyperparamDef {
   key: string;
   label: string;
+  tooltip: string;
   default: number;
   min: number;
   max: number;
@@ -37,30 +38,30 @@ interface HyperparamDef {
 
 const HYPERPARAMS: Record<string, HyperparamDef[]> = {
   random_forest: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 0, min: 0, max: 100, step: 1 },
-    { key: "min_samples_split", label: "Min samples to split", default: 2, min: 2, max: 50, step: 1 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: 0, min: 0, max: 100, step: 1 },
+    { key: "min_samples_split", label: "Min samples to split", tooltip: "Minimum number of examples needed before a tree can make a new decision. Higher values make the model more conservative.", default: 2, min: 2, max: 50, step: 1 },
   ],
   logistic_regression: [
-    { key: "C", label: "Regularization (C)", default: 1.0, min: 0.01, max: 100, step: 0.1 },
-    { key: "max_iter", label: "Max iterations", default: 1000, min: 100, max: 10000, step: 100 },
+    { key: "C", label: "Regularization (C)", tooltip: "Controls how much the model is allowed to fit the training data. Lower values prevent overfitting by keeping the model simpler.", default: 1.0, min: 0.01, max: 100, step: 0.1 },
+    { key: "max_iter", label: "Max iterations", tooltip: "Maximum number of times the algorithm cycles through the data to find the best fit.", default: 1000, min: 100, max: 10000, step: 100 },
   ],
   linear_regression: [],
   xgboost: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: 6, min: 0, max: 20, step: 1 },
-    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: 6, min: 0, max: 20, step: 1 },
+    { key: "learning_rate", label: "Learning rate", tooltip: "How much each new tree corrects the previous ones. Smaller values learn more carefully but need more trees to compensate.", default: 0.1, min: 0.01, max: 1, step: 0.01 },
   ],
   lightgbm: [
-    { key: "n_estimators", label: "Trees", default: 100, min: 10, max: 1000, step: 10 },
-    { key: "max_depth", label: "Max depth (0 = unlimited)", default: -1, min: -1, max: 50, step: 1 },
-    { key: "learning_rate", label: "Learning rate", default: 0.1, min: 0.01, max: 1, step: 0.01 },
-    { key: "num_leaves", label: "Num leaves", default: 31, min: 2, max: 256, step: 1 },
+    { key: "n_estimators", label: "Trees", tooltip: "How many decision trees to build. More trees usually means better accuracy but slower training.", default: 100, min: 10, max: 1000, step: 10 },
+    { key: "max_depth", label: "Max depth (0 = unlimited)", tooltip: "How many levels deep each tree can grow. Deeper trees capture more detail but may memorize your data instead of learning patterns.", default: -1, min: -1, max: 50, step: 1 },
+    { key: "learning_rate", label: "Learning rate", tooltip: "How much each new tree corrects the previous ones. Smaller values learn more carefully but need more trees to compensate.", default: 0.1, min: 0.01, max: 1, step: 0.01 },
+    { key: "num_leaves", label: "Num leaves", tooltip: "Maximum number of leaf nodes per tree. More leaves capture more detail but increase the risk of memorizing data.", default: 31, min: 2, max: 256, step: 1 },
   ],
   kmeans: [],
   dbscan: [
-    { key: "eps", label: "Epsilon", default: 0.5, min: 0.01, max: 10, step: 0.05 },
-    { key: "min_samples", label: "Min samples", default: 5, min: 1, max: 50, step: 1 },
+    { key: "eps", label: "Epsilon", tooltip: "How close points must be to count as neighbors. Smaller values find tighter, more compact groups.", default: 0.5, min: 0.01, max: 10, step: 0.05 },
+    { key: "min_samples", label: "Min samples", tooltip: "Minimum number of nearby points required to form the core of a group. Higher values ignore smaller groups as noise.", default: 5, min: 1, max: 50, step: 1 },
   ],
   hierarchical: [],
 };
@@ -84,6 +85,13 @@ export function ModelView() {
   const [profiles, setProfiles] = useState<ColumnProfile[]>([]);
   const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const [featureSearch, setFeatureSearch] = useState("");
+  const [useRegex, setUseRegex] = useState(false);
+  const [smartFilter, setSmartFilter] = useState<string | null>(null);
+  const lastClickedFeature = useRef<string | null>(null);
+  const [hpTooltip, setHpTooltip] = useState<string | null>(null);
+  const [autoTuning, setAutoTuning] = useState(false);
+  const [autoTuneData, setAutoTuneData] = useState<AutoTuneResult | null>(null);
+  const [autoTuneError, setAutoTuneError] = useState<string | null>(null);
 
   useEffect(() => {
     if (summary) {
@@ -129,6 +137,33 @@ export function ModelView() {
     );
   }, [profiles, summary]);
 
+  // Detect low-variance columns (single unique value = constant)
+  const lowVarianceColumns = useMemo(() => {
+    if (profiles.length === 0) return new Set<string>();
+    return new Set(
+      profiles
+        .filter((p) => p.unique_count != null && p.unique_count <= 1)
+        .map((p) => p.name)
+    );
+  }, [profiles]);
+
+  // Detect high-null columns (>50% missing)
+  const highNullColumns = useMemo(() => {
+    if (profiles.length === 0) return new Set<string>();
+    return new Set(
+      profiles
+        .filter((p) => p.null_percent > 50)
+        .map((p) => p.name)
+    );
+  }, [profiles]);
+
+  // Smart filter sets for quick lookup
+  const smartFilterSets: Record<string, Set<string>> = useMemo(() => ({
+    id: idLikeColumns,
+    low_variance: lowVarianceColumns,
+    high_nulls: highNullColumns,
+  }), [idLikeColumns, lowVarianceColumns, highNullColumns]);
+
   // Warn if all selected features are ID-like
   const featureWarning = useMemo(() => {
     if (selectedFeatures.length === 0) return null;
@@ -141,6 +176,68 @@ export function ModelView() {
     }
     return null;
   }, [selectedFeatures, idLikeColumns]);
+
+  // Algorithm recommendation based on dataset properties
+  const recommendation = useMemo<{ algorithm: string; reason: string } | null>(() => {
+    if (!task || !summary) return null;
+    const rows = summary.rows;
+    const featureCount = availableFeatures.length;
+
+    if (task === "classification") {
+      // Check if most features are categorical
+      const catCount = availableFeatures.filter((col) => {
+        const t = columnTypeMap.get(col);
+        return t === "str" || t === "cat";
+      }).length;
+      const mostlyCategorical = featureCount > 0 && catCount > featureCount * 0.5;
+
+      if (rows >= 10000) {
+        return { algorithm: "lightgbm", reason: mostlyCategorical
+          ? "Tree-based algorithms handle categorical data naturally."
+          : "LightGBM handles large datasets efficiently and often achieves the best accuracy." };
+      }
+      if (rows >= 1000) {
+        return { algorithm: mostlyCategorical ? "random_forest" : "random_forest", reason: mostlyCategorical
+          ? "Tree-based algorithms handle categorical data naturally."
+          : "Random Forest is a reliable all-rounder for medium-sized datasets." };
+      }
+      // rows < 1000
+      if (mostlyCategorical) {
+        return { algorithm: "random_forest", reason: "Tree-based algorithms handle categorical data naturally." };
+      }
+      if (featureCount > rows * 0.5) {
+        return { algorithm: "logistic_regression", reason: "When you have many features relative to rows, simpler models avoid memorizing noise." };
+      }
+      return { algorithm: "logistic_regression", reason: "With a smaller dataset, Logistic Regression is less likely to overfit and gives interpretable results." };
+    }
+
+    if (task === "regression") {
+      if (rows >= 10000) {
+        return { algorithm: "lightgbm", reason: "LightGBM is fast and powerful for larger datasets." };
+      }
+      if (rows >= 1000) {
+        return { algorithm: "random_forest", reason: "Random Forest captures non-linear patterns well for medium-sized datasets." };
+      }
+      return { algorithm: "linear_regression", reason: "With a smaller dataset, Linear Regression avoids overfitting and is easy to interpret." };
+    }
+
+    if (task === "clustering") {
+      if (nClusters === 3) {
+        // Default value — user likely hasn't set it deliberately
+        return { algorithm: "dbscan", reason: "DBSCAN automatically finds the number of groups and handles irregular shapes." };
+      }
+      return { algorithm: "kmeans", reason: "K-Means is a fast, reliable choice when you know roughly how many groups to expect." };
+    }
+
+    return null;
+  }, [task, summary, availableFeatures, columnTypeMap, nClusters]);
+
+  // Get the display label for a recommended algorithm
+  const recommendedAlgoLabel = useMemo(() => {
+    if (!recommendation || !task) return "";
+    const options = ALGO_OPTIONS[task];
+    return options?.find((o) => o.value === recommendation.algorithm)?.label ?? recommendation.algorithm;
+  }, [recommendation, task]);
 
   // Recommend target columns based on task type
   const recommendedTargets = useMemo(() => {
@@ -170,7 +267,6 @@ export function ModelView() {
     setHideRecommendations(false);
     setHyperparams({});
     setTypeFilter(null);
-    setAlgorithm(t === "clustering" ? "kmeans" : "random_forest");
     // For clustering, auto-select all non-ID features since there's no target
     if (t === "clustering") {
       setSelectedFeatures(columns.filter((c) => !idLikeColumns.has(c)));
@@ -178,6 +274,13 @@ export function ModelView() {
       setSelectedFeatures([]);
     }
   };
+
+  // Set default algorithm from recommendation whenever it changes
+  useEffect(() => {
+    if (recommendation) {
+      setAlgorithm(recommendation.algorithm);
+    }
+  }, [recommendation]);
 
   const handleTargetSelect = (col: string) => {
     if (target === col) {
@@ -197,15 +300,38 @@ export function ModelView() {
     );
   };
 
+  // Track visible features for shift+click (set from render)
+  const visibleFeaturesRef = useRef<string[]>([]);
+
   // Drag-select: click and drag across feature buttons to select/deselect in bulk
   const dragMode = useRef<"select" | "deselect" | null>(null);
   const dragTouched = useRef<Set<string>>(new Set());
 
-  const handleFeaturePointerDown = useCallback((col: string) => {
+  const handleFeaturePointerDown = useCallback((col: string, e: React.PointerEvent) => {
+    // Shift+click: range select between last clicked and current
+    if (e.shiftKey && lastClickedFeature.current) {
+      const visible = visibleFeaturesRef.current;
+      const lastIdx = visible.indexOf(lastClickedFeature.current);
+      const curIdx = visible.indexOf(col);
+      if (lastIdx !== -1 && curIdx !== -1) {
+        const start = Math.min(lastIdx, curIdx);
+        const end = Math.max(lastIdx, curIdx);
+        const range = visible.slice(start, end + 1);
+        setSelectedFeatures((prev) => {
+          const prevSet = new Set(prev);
+          for (const c of range) prevSet.add(c);
+          return Array.from(prevSet);
+        });
+        lastClickedFeature.current = col;
+        return;
+      }
+    }
+
     const isSelected = selectedFeatures.includes(col);
     dragMode.current = isSelected ? "deselect" : "select";
     dragTouched.current = new Set([col]);
     toggleFeature(col);
+    lastClickedFeature.current = col;
   }, [selectedFeatures, toggleFeature]);
 
   const handleFeaturePointerEnter = useCallback((col: string) => {
@@ -460,9 +586,20 @@ export function ModelView() {
           {/* Feature selection */}
           {(isSupervised ? target : true) && (() => {
             const searchLower = featureSearch.toLowerCase();
+            let searchRegex: RegExp | null = null;
+            if (useRegex && featureSearch) {
+              try { searchRegex = new RegExp(featureSearch, "i"); } catch { /* invalid regex, fall through */ }
+            }
+            const activeSmartSet = smartFilter ? smartFilterSets[smartFilter] : null;
             const visibleFeatures = availableFeatures
               .filter((col) => !typeFilter || columnTypeMap.get(col) === typeFilter)
-              .filter((col) => !searchLower || col.toLowerCase().includes(searchLower));
+              .filter((col) => {
+                if (!featureSearch) return true;
+                if (searchRegex) return searchRegex.test(col);
+                return col.toLowerCase().includes(searchLower);
+              })
+              .filter((col) => !activeSmartSet || activeSmartSet.has(col));
+            visibleFeaturesRef.current = visibleFeatures;
             return (
             <motion.div
               initial={{ opacity: 0, y: 4 }}
@@ -485,11 +622,11 @@ export function ModelView() {
                     }}
                     className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
                   >
-                    {featureSearch || typeFilter ? "Select visible" : "All"}
+                    {featureSearch || typeFilter || smartFilter ? "Select visible" : "All"}
                   </button>
                   <button
                     onClick={() => {
-                      if (featureSearch || typeFilter) {
+                      if (featureSearch || typeFilter || smartFilter) {
                         const visibleSet = new Set(visibleFeatures);
                         setSelectedFeatures((prev) => prev.filter((c) => !visibleSet.has(c)));
                       } else {
@@ -498,18 +635,85 @@ export function ModelView() {
                     }}
                     className="text-[11px] text-text-tertiary hover:text-text-primary cursor-pointer"
                   >
-                    {featureSearch || typeFilter ? "Deselect visible" : "None"}
+                    {featureSearch || typeFilter || smartFilter ? "Deselect visible" : "None"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const selectedSet = new Set(selectedFeatures);
+                      setSelectedFeatures(availableFeatures.filter((c) => !selectedSet.has(c)));
+                    }}
+                    className="text-[11px] text-text-tertiary hover:text-text-primary cursor-pointer"
+                  >
+                    Invert
                   </button>
                 </div>
               </div>
               {availableFeatures.length > 15 && (
-                <input
-                  type="text"
-                  placeholder="Search columns..."
-                  value={featureSearch}
-                  onChange={(e) => setFeatureSearch(e.target.value)}
-                  className="w-full mb-2 px-3 py-1.5 text-[12px] border border-border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none focus:border-plume-500 transition-colors duration-200"
-                />
+                <div className="relative mb-2">
+                  <input
+                    type="text"
+                    placeholder={useRegex ? "Regex pattern e.g. ^feat_\\d+" : "Search columns..."}
+                    value={featureSearch}
+                    onChange={(e) => setFeatureSearch(e.target.value)}
+                    className={`w-full px-3 py-1.5 pr-14 text-[12px] border rounded-[var(--radius-default)] bg-surface text-text-primary outline-none transition-colors duration-200 ${
+                      useRegex && featureSearch && (() => { try { new RegExp(featureSearch); return false; } catch { return true; } })()
+                        ? "border-red-400 focus:border-red-500"
+                        : "border-border focus:border-plume-500"
+                    }`}
+                  />
+                  <button
+                    onClick={() => setUseRegex(!useRegex)}
+                    className={`absolute right-2 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[10px] rounded font-mono cursor-pointer transition-colors duration-150 ${
+                      useRegex
+                        ? "bg-plume-100 dark:bg-plume-500/20 text-plume-700 dark:text-plume-400"
+                        : "text-text-tertiary hover:text-text-secondary"
+                    }`}
+                    title="Toggle regex matching"
+                  >
+                    .*
+                  </button>
+                </div>
+              )}
+              {/* Smart filter chips */}
+              {profiles.length > 0 && (
+                <div className="flex gap-1.5 mb-2 flex-wrap">
+                  {idLikeColumns.size > 0 && (
+                    <button
+                      onClick={() => setSmartFilter(smartFilter === "id" ? null : "id")}
+                      className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors duration-150 cursor-pointer ${
+                        smartFilter === "id"
+                          ? "border-amber-400 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                          : "border-border text-text-tertiary hover:border-text-tertiary"
+                      }`}
+                    >
+                      ID-like ({idLikeColumns.size})
+                    </button>
+                  )}
+                  {lowVarianceColumns.size > 0 && (
+                    <button
+                      onClick={() => setSmartFilter(smartFilter === "low_variance" ? null : "low_variance")}
+                      className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors duration-150 cursor-pointer ${
+                        smartFilter === "low_variance"
+                          ? "border-amber-400 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                          : "border-border text-text-tertiary hover:border-text-tertiary"
+                      }`}
+                    >
+                      Constant ({lowVarianceColumns.size})
+                    </button>
+                  )}
+                  {highNullColumns.size > 0 && (
+                    <button
+                      onClick={() => setSmartFilter(smartFilter === "high_nulls" ? null : "high_nulls")}
+                      className={`px-2 py-0.5 text-[10px] rounded-full border transition-colors duration-150 cursor-pointer ${
+                        smartFilter === "high_nulls"
+                          ? "border-amber-400 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                          : "border-border text-text-tertiary hover:border-text-tertiary"
+                      }`}
+                    >
+                      High nulls ({highNullColumns.size})
+                    </button>
+                  )}
+                </div>
               )}
               <div
                 className="flex flex-wrap gap-2 max-h-[240px] overflow-auto select-none"
@@ -521,7 +725,7 @@ export function ModelView() {
                   return (
                     <button
                       key={col}
-                      onPointerDown={(e) => { e.preventDefault(); handleFeaturePointerDown(col); }}
+                      onPointerDown={(e) => { e.preventDefault(); handleFeaturePointerDown(col, e); }}
                       onPointerEnter={() => handleFeaturePointerEnter(col)}
                       className={`
                         px-3 py-1.5 text-[12px] rounded-[var(--radius-default)] border
@@ -558,6 +762,15 @@ export function ModelView() {
             </motion.div>
             );
           })()}
+
+          {/* Algorithm suggestion (shown before Customize is opened) */}
+          {canTrain && !showAdvanced && recommendation && (
+            <div className="mb-4">
+              <p className="text-[11px] text-text-tertiary">
+                Suggested starting point: <span className="text-plume-600 dark:text-plume-400">{recommendedAlgoLabel}</span> — {recommendation.reason}
+              </p>
+            </div>
+          )}
 
           {/* Clustering: n_clusters */}
           {task === "clustering" && algorithm !== "dbscan" && (
@@ -602,6 +815,9 @@ export function ModelView() {
                       `}
                     >
                       {opt.label}
+                      {recommendation && recommendation.algorithm === opt.value && (
+                        <span className="ml-1.5 text-[9px] text-emerald-600 dark:text-emerald-400">suggested</span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -613,7 +829,23 @@ export function ModelView() {
                     <div className="grid grid-cols-2 gap-3">
                       {(HYPERPARAMS[algorithm] || []).map((def) => (
                         <div key={def.key} className="flex flex-col gap-1">
-                          <label className="text-[10px] text-text-tertiary">{def.label}</label>
+                          <label className="text-[10px] text-text-tertiary">
+                            {def.label}
+                            <span className="relative inline-block ml-1">
+                              <span
+                                className="text-text-tertiary/60 cursor-help hover:text-plume-500 transition-colors duration-150"
+                                onMouseEnter={() => setHpTooltip(def.key)}
+                                onMouseLeave={() => setHpTooltip(null)}
+                              >
+                                ?
+                              </span>
+                              {hpTooltip === def.key && (
+                                <span className="absolute z-10 bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-[220px] px-3 py-2 text-[11px] leading-relaxed text-text-primary bg-surface border border-border rounded-[var(--radius-default)] shadow-md pointer-events-none">
+                                  {def.tooltip}
+                                </span>
+                              )}
+                            </span>
+                          </label>
                           <input
                             type="number"
                             min={def.min}
@@ -631,6 +863,112 @@ export function ModelView() {
                         </div>
                       ))}
                     </div>
+                    {/* Auto-tune button */}
+                    {isSupervised && algorithm !== "linear_regression" && (
+                      <div className="col-span-2 mt-1">
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={async () => {
+                              setAutoTuning(true);
+                              setAutoTuneData(null);
+                              setAutoTuneError(null);
+                              try {
+                                const result = await invoke<AutoTuneResult>("auto_tune", {
+                                  task,
+                                  target,
+                                  features: selectedFeatures,
+                                  algorithm,
+                                  useCv: true,
+                                  cvFolds: cvFolds,
+                                });
+                                setHyperparams(result.best_hyperparams);
+                                setAutoTuneData(result);
+                              } catch (err) {
+                                setAutoTuneError(String(err).split("\n").pop() ?? String(err));
+                              } finally {
+                                setAutoTuning(false);
+                              }
+                            }}
+                            disabled={autoTuning || training || comparing || selectedFeatures.length === 0}
+                            className="px-3 py-1.5 text-[11px] font-medium rounded-[var(--radius-default)] border border-plume-500 text-plume-600 dark:text-plume-400 hover:bg-plume-50 dark:hover:bg-plume-500/10 disabled:opacity-50 transition-colors duration-200 cursor-pointer"
+                          >
+                            {autoTuning ? (
+                              <span className="flex items-center gap-1.5">
+                                <motion.span
+                                  className="inline-block w-1.5 h-1.5 rounded-full bg-plume-500/60"
+                                  animate={{ scale: [1, 1.3, 1] }}
+                                  transition={{ duration: 1, repeat: Infinity }}
+                                />
+                                Finding best settings...
+                              </span>
+                            ) : (
+                              "Find best settings"
+                            )}
+                          </button>
+                          {autoTuneError && (
+                            <span className="text-[10px] text-red-500">{autoTuneError}</span>
+                          )}
+                        </div>
+
+                        {/* Auto-tune results summary */}
+                        {autoTuneData && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.2 }}
+                            className="mt-3 p-3 rounded-[var(--radius-default)] border border-plume-200 dark:border-plume-800 bg-plume-50/50 dark:bg-plume-500/5"
+                          >
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-[11px] font-medium text-plume-700 dark:text-plume-400">
+                                Best {autoTuneData.metric}: {autoTuneData.metric === "accuracy"
+                                  ? `${(autoTuneData.best_score * 100).toFixed(1)}%`
+                                  : autoTuneData.best_score.toFixed(3)}
+                              </span>
+                              <span className="text-[10px] text-text-tertiary">
+                                from {autoTuneData.all_results.length} combinations tested
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-1 max-h-[160px] overflow-auto">
+                              {autoTuneData.all_results.map((entry, i) => {
+                                const isBest = i === 0;
+                                const defs = HYPERPARAMS[algorithm] || [];
+                                const paramStr = Object.entries(entry.hyperparams)
+                                  .map(([k, v]) => {
+                                    const def = defs.find((d) => d.key === k);
+                                    const shortLabel = def ? def.label.split("(")[0].trim().toLowerCase() : k;
+                                    return `${shortLabel} ${typeof v === "number" && v % 1 !== 0 ? v.toFixed(3) : v}`;
+                                  })
+                                  .join(", ");
+                                const scoreFmt = autoTuneData.metric === "accuracy"
+                                  ? `${(entry.score * 100).toFixed(1)}%`
+                                  : entry.score.toFixed(3);
+                                return (
+                                  <div
+                                    key={i}
+                                    onClick={() => setHyperparams(entry.hyperparams)}
+                                    className={`flex items-center gap-2 text-[10px] px-1.5 py-1 rounded cursor-pointer transition-colors duration-100 ${
+                                      isBest
+                                        ? "bg-plume-100 dark:bg-plume-500/10 font-medium"
+                                        : "hover:bg-plume-100/50 dark:hover:bg-plume-500/5"
+                                    }`}
+                                    title="Click to use these settings"
+                                  >
+                                    <span className={`w-[50px] shrink-0 tabular-nums ${isBest ? "text-plume-700 dark:text-plume-400" : "text-text-secondary"}`}>
+                                      {scoreFmt}
+                                    </span>
+                                    <span className="text-text-tertiary truncate">{paramStr}</span>
+                                    {isBest && <span className="text-plume-600 dark:text-plume-400 shrink-0">← best</span>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <p className="text-[9px] text-text-tertiary mt-2">
+                              Click any row to use those settings. Best settings are already applied to the sliders above.
+                            </p>
+                          </motion.div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
