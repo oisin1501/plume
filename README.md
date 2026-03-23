@@ -46,6 +46,49 @@ Save predictions as CSV, export the trained model as a pickle file, or generate 
 
 **No Python or packages needed** — everything is bundled inside the app.
 
+## Validation
+
+Plume's ML pipeline is validated against gold-standard datasets from scikit-learn. Every algorithm is trained through the exact same code path the app uses and must meet conservative performance floors — if any check fails, something is broken in preprocessing, encoding, or model fitting.
+
+### Classification
+
+| Dataset | Algorithm | Accuracy Criteria | Accuracy Actual | F1 Criteria | F1 Actual | Result |
+|---------|-----------|:-----------------:|:---------------:|:-----------:|:---------:|:------:|
+| Iris (150 rows, 3 classes) | Random Forest | ≥ 0.90 | 1.0000 | ≥ 0.88 | 1.0000 | PASS |
+| Iris (150 rows, 3 classes) | Logistic Regression | ≥ 0.90 | 1.0000 | ≥ 0.88 | 1.0000 | PASS |
+| Breast Cancer (569 rows, 2 classes) | Random Forest | ≥ 0.92 | 0.9649 | ≥ 0.90 | 0.9722 | PASS |
+| Breast Cancer (569 rows, 2 classes) | Logistic Regression | ≥ 0.92 | 0.9561 | ≥ 0.90 | 0.9655 | PASS |
+| Breast Cancer (569 rows, 2 classes) | XGBoost | ≥ 0.92 | 0.9561 | ≥ 0.90 | 0.9650 | PASS |
+| Breast Cancer (569 rows, 2 classes) | LightGBM | ≥ 0.92 | 0.9649 | ≥ 0.90 | 0.9722 | PASS |
+| Wine (178 rows, 3 classes) | Random Forest | ≥ 0.85 | 1.0000 | ≥ 0.83 | 1.0000 | PASS |
+| Wine (178 rows, 3 classes) | XGBoost | ≥ 0.85 | 0.9722 | ≥ 0.83 | 0.9718 | PASS |
+| Wine (178 rows, 3 classes) | LightGBM | ≥ 0.85 | 1.0000 | ≥ 0.83 | 1.0000 | PASS |
+
+### Regression
+
+| Dataset | Algorithm | R² Criteria | R² Actual | Result |
+|---------|-----------|:-----------:|:---------:|:------:|
+| Diabetes (442 rows) | Random Forest | ≥ 0.30 | 0.4428 | PASS |
+| Diabetes (442 rows) | Linear Regression | ≥ 0.30 | 0.4526 | PASS |
+| Diabetes (442 rows) | XGBoost | ≥ 0.30 | 0.3595 | PASS |
+| Diabetes (442 rows) | LightGBM | ≥ 0.30 | 0.3959 | PASS |
+| Synthetic (1000 rows) | Random Forest | ≥ 0.75 | 0.9337 | PASS |
+| Synthetic (1000 rows) | Linear Regression | ≥ 0.75 | 0.9814 | PASS |
+| Synthetic (1000 rows) | XGBoost | ≥ 0.75 | 0.9452 | PASS |
+| Synthetic (1000 rows) | LightGBM | ≥ 0.75 | 0.9516 | PASS |
+
+### Safety guardrails
+
+| Check | Detail | Result |
+|-------|--------|:------:|
+| Reject datasets with < 2 rows | Returns error for 1-row dataset | PASS |
+| Reject single-class targets | Returns error when target has only 1 unique value | PASS |
+| Detect data leakage | Flags feature with > 0.95 correlation to target | PASS |
+| Handle categorical features | Encodes string columns and trains successfully | PASS |
+| Impute missing values | Imputes 10% NaN values and trains successfully | PASS |
+
+> **23 / 23 checks passed.** Run `cd python && pytest test_validation.py -v` to verify, or open [`python/validation_report.html`](python/validation_report.html) for the full visual report.
+
 ## Built with
 
 - [Tauri](https://tauri.app) — lightweight desktop framework (Rust backend, web frontend)
