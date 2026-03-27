@@ -17,6 +17,7 @@ interface AppState {
   trainingResults: TrainResult[];
   addTrainingResult: (result: TrainResult) => void;
   removeTrainingResult: (index: number) => void;
+  removeTrainingSession: (sessionId: string) => void;
   updateTrainingResultNickname: (index: number, nickname: string) => void;
 
   historyOpen: boolean;
@@ -45,6 +46,8 @@ export const useAppStore = create<AppState>((set) => ({
     set((s) => ({ trainingResults: [{ ...result, trainedAt: Date.now() }, ...s.trainingResults] })),
   removeTrainingResult: (index) =>
     set((s) => ({ trainingResults: s.trainingResults.filter((_, i) => i !== index) })),
+  removeTrainingSession: (sessionId) =>
+    set((s) => ({ trainingResults: s.trainingResults.filter((r) => r.sessionId !== sessionId) })),
   updateTrainingResultNickname: (index, nickname) =>
     set((s) => ({
       trainingResults: s.trainingResults.map((r, i) =>

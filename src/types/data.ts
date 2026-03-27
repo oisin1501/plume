@@ -87,6 +87,8 @@ export interface TrainResult {
   hyperparams?: Record<string, any>;
   nickname?: string;
   trainedAt?: number;
+  sessionId?: string;
+  positive_class?: string | null;
   metrics: Record<string, any>;
   train_metrics?: Record<string, number>;
   feature_importance?: { feature: string; importance: number }[];

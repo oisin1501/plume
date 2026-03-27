@@ -164,6 +164,7 @@ def train_supervised(params):
         hyperparams = params.get("hyperparams", {})
         use_cv = params.get("use_cv", False)
         cv_folds = params.get("cv_folds", 5)
+        positive_class = params.get("positive_class", None)
 
         if len(df) < 2:
             respond_error("Dataset has fewer than 2 rows. Cannot train a model.")
@@ -260,16 +261,38 @@ def train_supervised(params):
         metrics = {}
         train_metrics = {}
         if task == "classification":
+            n_classes = len(set(y_test))
+            # Resolve positive class label to encoded value
+            pos_label_val = None
+            if positive_class is not None and n_classes == 2:
+                if target_encoder is not None:
+                    try:
+                        pos_label_val = int(target_encoder.transform([positive_class])[0])
+                    except (ValueError, KeyError):
+                        pass
+                else:
+                    # Numeric target — try to match directly
+                    try:
+                        pos_label_val = type(y_test[0])(positive_class)
+                    except (ValueError, TypeError):
+                        pass
+
             metrics["accuracy"] = round(accuracy_score(y_test, y_pred), 4)
-            avg = "weighted" if len(set(y_test)) > 2 else "binary"
-            metrics["precision"] = round(precision_score(y_test, y_pred, average=avg, zero_division=0), 4)
-            metrics["recall"] = round(recall_score(y_test, y_pred, average=avg, zero_division=0), 4)
-            metrics["f1"] = round(f1_score(y_test, y_pred, average=avg, zero_division=0), 4)
+            avg = "weighted" if n_classes > 2 else "binary"
+            metric_kw = {"average": avg, "zero_division": 0}
+            if avg == "binary" and pos_label_val is not None:
+                metric_kw["pos_label"] = pos_label_val
+            metrics["precision"] = round(precision_score(y_test, y_pred, **metric_kw), 4)
+            metrics["recall"] = round(recall_score(y_test, y_pred, **metric_kw), 4)
+            metrics["f1"] = round(f1_score(y_test, y_pred, **metric_kw), 4)
             train_metrics["accuracy"] = round(accuracy_score(y_train, y_pred_train), 4)
             train_avg = "weighted" if len(set(y_train)) > 2 else "binary"
-            train_metrics["precision"] = round(precision_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
-            train_metrics["recall"] = round(recall_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
-            train_metrics["f1"] = round(f1_score(y_train, y_pred_train, average=train_avg, zero_division=0), 4)
+            train_metric_kw = {"average": train_avg, "zero_division": 0}
+            if train_avg == "binary" and pos_label_val is not None:
+                train_metric_kw["pos_label"] = pos_label_val
+            train_metrics["precision"] = round(precision_score(y_train, y_pred_train, **train_metric_kw), 4)
+            train_metrics["recall"] = round(recall_score(y_train, y_pred_train, **train_metric_kw), 4)
+            train_metrics["f1"] = round(f1_score(y_train, y_pred_train, **train_metric_kw), 4)
 
             # Confusion matrix
             cm = confusion_matrix(y_test, y_pred)
@@ -304,7 +327,13 @@ def train_supervised(params):
                 y_proba = model.predict_proba(X_test)
                 classes = list(range(y_proba.shape[1]))
                 if len(classes) == 2:
-                    fpr, tpr, _ = roc_curve(y_test, y_proba[:, 1])
+                    # Use positive class index for ROC if specified
+                    pos_col = 1
+                    if pos_label_val is not None:
+                        model_classes = list(model.classes_)
+                        if pos_label_val in model_classes:
+                            pos_col = model_classes.index(pos_label_val)
+                    fpr, tpr, _ = roc_curve(y_test, y_proba[:, pos_col], pos_label=pos_label_val if pos_label_val is not None else model.classes_[1])
                     roc_auc = auc(fpr, tpr)
                     # Downsample to max 200 points for JSON size
                     step = max(1, len(fpr) // 200)
@@ -366,6 +395,8 @@ def train_supervised(params):
             "test_size": len(X_test),
             "predictions": predictions,
         }
+        if positive_class is not None:
+            result["positive_class"] = positive_class
         if cv_scores:
             result["cv_scores"] = cv_scores
         if roc_data:
@@ -659,47 +690,169 @@ def _convert_numpy(val):
     return val
 
 
+ALGO_DISPLAY = {
+    "random_forest": "Random Forest",
+    "logistic_regression": "Logistic Regression",
+    "linear_regression": "Linear Regression",
+    "xgboost": "XGBoost",
+    "lightgbm": "LightGBM",
+    "kmeans": "K-Means",
+    "dbscan": "DBSCAN",
+    "hierarchical": "Hierarchical",
+}
+
+METRIC_EXPLANATIONS = {
+    "accuracy": ("Accuracy", "The percentage of predictions that were correct."),
+    "precision": ("Precision", "Of all the times the model predicted the positive class, how often it was right."),
+    "recall": ("Recall", "Of all actual positive cases, how many the model found."),
+    "f1": ("F1 Score", "A balance between precision and recall. Higher is better."),
+    "r2": ("R²", "How much of the variation in the data the model explains. 1.0 is perfect, 0 means no better than guessing the average."),
+    "mae": ("MAE", "Mean Absolute Error — the average size of prediction errors. Lower is better."),
+    "rmse": ("RMSE", "Root Mean Squared Error — like MAE but penalizes large errors more. Lower is better."),
+}
+
+
+def _model_label(r):
+    """Return a human-readable label for a training result."""
+    label = r.get("label")
+    if label:
+        return label
+    nickname = r.get("nickname")
+    if nickname:
+        return nickname
+    return ALGO_DISPLAY.get(r.get("algorithm", ""), r.get("algorithm", "Model"))
+
+
+def _metric_row(key, value, task, positive_class=None):
+    """Return an HTML table row for a metric with a plain-English explanation."""
+    info = METRIC_EXPLANATIONS.get(key)
+    if not info:
+        label = key.replace("_", " ").title()
+        explanation = ""
+    else:
+        label, explanation = info
+
+    if key in ("accuracy", "precision", "recall", "f1"):
+        formatted = f"{value * 100:.1f}%"
+    elif isinstance(value, float):
+        formatted = f"{value:.4f}"
+    else:
+        formatted = str(value)
+
+    note = ""
+    if key in ("precision", "recall", "f1") and positive_class:
+        note = f" (measuring detection of \"{positive_class}\")"
+
+    return (
+        f"<tr>"
+        f"<td><strong>{label}</strong>{note}"
+        f"{'<br><span class=\"explain\">' + explanation + '</span>' if explanation else ''}"
+        f"</td>"
+        f"<td class='num'>{formatted}</td>"
+        f"</tr>"
+    )
+
+
+def _quality_label(task, metrics):
+    """Return a plain-English quality verdict."""
+    if task == "classification":
+        acc = metrics.get("accuracy", 0)
+        if acc >= 0.95:
+            return "strong", "This is a strong model — double-check for data leakage if the data seems too easy."
+        if acc >= 0.85:
+            return "good", "This model performs well and should be reliable for most use cases."
+        if acc >= 0.7:
+            return "reasonable", "The model is reasonable but has room for improvement. Try different features or algorithms."
+        return "weak", "The model is struggling. Consider adding more features, more data, or a different approach."
+    elif task == "regression":
+        r2 = metrics.get("r2", 0)
+        if r2 >= 0.85:
+            return "strong", "The model explains most of the variation in your data."
+        if r2 >= 0.6:
+            return "good", "The model captures a meaningful amount of the pattern in your data."
+        if r2 >= 0.3:
+            return "reasonable", "The model has learned some patterns but misses a lot. Try different features or algorithms."
+        return "weak", "The model explains very little. The relationship may be too complex or the features too weak."
+    return "neutral", ""
+
+
 def generate_report(params):
     """Generate an HTML summary report from training results."""
     try:
         output_path = params["output_path"]
-        results = params["results"]  # list of TrainResult dicts
+        results = params["results"]
+        now = __import__("datetime").datetime.now().strftime("%B %d, %Y at %H:%M")
+
+        quality_colors = {
+            "strong": "#059669",
+            "good": "#2563eb",
+            "reasonable": "#d97706",
+            "weak": "#dc2626",
+            "neutral": "#6b7280",
+        }
 
         html_parts = [
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+            "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>",
             "<title>Plume Model Report</title>",
             "<style>",
-            "body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:800px;margin:40px auto;padding:0 20px;color:#333;background:#fafafa}",
-            "h1{font-size:22px;font-weight:600;margin-bottom:4px}",
-            "h2{font-size:16px;font-weight:600;margin-top:32px;border-bottom:1px solid #e5e5e5;padding-bottom:6px}",
-            "h3{font-size:13px;font-weight:600;margin-top:20px}",
+            "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:820px;margin:40px auto;padding:0 24px;color:#1f2937;background:#f9fafb;line-height:1.6}",
+            "h1{font-size:24px;font-weight:700;margin-bottom:2px}",
+            "h1 span{color:#6366f1}",
+            ".subtitle{font-size:12px;color:#9ca3af;margin-bottom:32px}",
+            "h2{font-size:17px;font-weight:600;margin-top:36px;padding-bottom:8px;border-bottom:2px solid #e5e7eb}",
+            "h3{font-size:14px;font-weight:600;margin-top:24px;color:#374151}",
+            ".card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px 20px;margin-top:12px}",
             "table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}",
-            "th,td{padding:6px 12px;text-align:left;border-bottom:1px solid #eee}",
-            "th{font-weight:500;color:#888;font-size:11px;text-transform:uppercase;letter-spacing:0.5px}",
-            "td.num{text-align:right;font-variant-numeric:tabular-nums}",
-            ".bar-wrap{background:#e5e5e5;border-radius:3px;height:6px;width:100%}",
-            ".bar{background:#8b5cf6;height:6px;border-radius:3px}",
-            ".meta{font-size:11px;color:#888;margin-top:24px}",
-            ".best{background:#f5f3ff}",
+            "th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #f3f4f6}",
+            "th{font-weight:600;color:#9ca3af;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;background:#f9fafb}",
+            "td.num{text-align:right;font-variant-numeric:tabular-nums;font-weight:500}",
+            ".explain{font-size:11px;color:#9ca3af;font-weight:normal}",
+            ".bar-wrap{background:#e5e7eb;border-radius:4px;height:8px;width:100%;min-width:80px}",
+            ".bar{background:#8b5cf6;height:8px;border-radius:4px}",
+            ".meta{font-size:11px;color:#9ca3af;margin-top:16px}",
+            ".verdict{border-radius:6px;padding:10px 14px;margin-top:12px;font-size:13px;font-weight:500}",
+            ".best-badge{display:inline-block;background:#ede9fe;color:#6d28d9;font-size:10px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:8px;vertical-align:middle}",
+            ".shap-bar{display:flex;align-items:center;margin:6px 0;font-size:12px}",
+            ".shap-label{width:160px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}",
+            ".shap-track{flex:1;background:#e5e7eb;border-radius:4px;height:16px;margin:0 10px;position:relative;overflow:hidden}",
+            ".shap-fill{height:16px;border-radius:4px}",
+            ".shap-val{width:65px;text-align:right;flex-shrink:0;font-variant-numeric:tabular-nums;font-weight:500}",
+            ".shap-explain{font-size:12px;color:#6b7280;margin-top:4px;margin-bottom:2px;padding-left:4px}",
+            ".tag{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;margin-right:4px}",
+            ".tag-push{background:#dcfce7;color:#166534}",
+            ".tag-pull{background:#fee2e2;color:#991b1b}",
             "</style></head><body>",
-            "<h1>Plume Model Report</h1>",
-            f"<p style='font-size:12px;color:#888'>Generated on {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}</p>",
+            "<h1><span>Plume</span> Model Report</h1>",
+            f"<p class='subtitle'>Generated {now}</p>",
         ]
 
+        # --- Comparison table (if multiple) ---
         if len(results) > 1:
-            # Comparison table
-            html_parts.append("<h2>Model Comparison</h2><table><thead><tr><th>Algorithm</th>")
             task_type = results[0].get("task", "")
+            html_parts.append("<h2>Model Comparison</h2>")
+            html_parts.append("<div class='card'><table><thead><tr><th>Model</th>")
             if task_type == "classification":
                 html_parts.append("<th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th>")
             elif task_type == "regression":
                 html_parts.append("<th>R²</th><th>MAE</th><th>RMSE</th>")
-            html_parts.append("</tr></thead><tbody>")
+            html_parts.append("<th>Features</th></tr></thead><tbody>")
 
-            for r in results:
+            # Find best index
+            best_i = 0
+            for i, r in enumerate(results):
                 m = r.get("metrics", {})
-                algo = r.get("algorithm", "")
-                html_parts.append(f"<tr><td>{algo}</td>")
+                bm = results[best_i].get("metrics", {})
+                if task_type == "classification" and m.get("accuracy", 0) > bm.get("accuracy", 0):
+                    best_i = i
+                elif task_type == "regression" and m.get("r2", -999) > bm.get("r2", -999):
+                    best_i = i
+
+            for i, r in enumerate(results):
+                m = r.get("metrics", {})
+                label = _model_label(r)
+                best_html = " <span class='best-badge'>best</span>" if i == best_i else ""
+                html_parts.append(f"<tr><td><strong>{label}</strong>{best_html}</td>")
                 if task_type == "classification":
                     html_parts.append(f"<td class='num'>{m.get('accuracy', 0)*100:.1f}%</td>")
                     html_parts.append(f"<td class='num'>{m.get('precision', 0)*100:.1f}%</td>")
@@ -709,50 +862,137 @@ def generate_report(params):
                     html_parts.append(f"<td class='num'>{m.get('r2', 0):.4f}</td>")
                     html_parts.append(f"<td class='num'>{m.get('mae', 0):.4f}</td>")
                     html_parts.append(f"<td class='num'>{m.get('rmse', 0):.4f}</td>")
-                html_parts.append("</tr>")
-            html_parts.append("</tbody></table>")
+                n_feat = len(r.get("features_used", []))
+                html_parts.append(f"<td class='num'>{n_feat}</td></tr>")
+            html_parts.append("</tbody></table></div>")
 
-        # Individual results
+        # --- Individual results ---
         for idx, r in enumerate(results):
-            algo = r.get("algorithm", "unknown")
             m = r.get("metrics", {})
-            html_parts.append(f"<h2>{algo}</h2>")
+            task_type = r.get("task", "")
+            label = _model_label(r)
+            pos_class = r.get("positive_class")
+            target_col = r.get("target")
 
-            # Metrics
-            html_parts.append("<table><tbody>")
-            for k, v in m.items():
-                if k == "confusion_matrix":
-                    continue
-                if isinstance(v, float):
-                    html_parts.append(f"<tr><td>{k}</td><td class='num'>{v:.4f}</td></tr>")
-                else:
-                    html_parts.append(f"<tr><td>{k}</td><td class='num'>{v}</td></tr>")
+            html_parts.append(f"<h2>{label}</h2>")
+
+            # Info tags
+            info_parts = []
+            if target_col:
+                info_parts.append(f"Target: <strong>{target_col}</strong>")
+            if pos_class:
+                info_parts.append(f"Positive class: <strong>{pos_class}</strong>")
+            n_feat = len(r.get("features_used", []))
+            if n_feat:
+                info_parts.append(f"{n_feat} features")
+            if r.get("train_size"):
+                info_parts.append(f"{r['train_size']} training rows, {r.get('test_size', '?')} test rows")
+            if info_parts:
+                html_parts.append(f"<p class='meta' style='margin-top:4px'>{' &middot; '.join(info_parts)}</p>")
+
+            # Quality verdict
+            quality, verdict_text = _quality_label(task_type, m)
+            if verdict_text:
+                color = quality_colors.get(quality, "#6b7280")
+                html_parts.append(
+                    f"<div class='verdict' style='background:{color}10;color:{color};border:1px solid {color}30'>"
+                    f"{verdict_text}</div>"
+                )
+
+            # Metrics table
+            html_parts.append("<div class='card'><h3 style='margin-top:0'>Performance Metrics</h3><table><tbody>")
+            if task_type == "classification":
+                for key in ["accuracy", "precision", "recall", "f1"]:
+                    if key in m:
+                        html_parts.append(_metric_row(key, m[key], task_type, pos_class))
+            elif task_type == "regression":
+                for key in ["r2", "mae", "rmse"]:
+                    if key in m:
+                        html_parts.append(_metric_row(key, m[key], task_type))
             html_parts.append("</tbody></table>")
+
+            # Train vs test comparison
+            tm = r.get("train_metrics")
+            if tm:
+                html_parts.append("<p class='explain' style='margin-top:10px'>")
+                if task_type == "classification" and "accuracy" in tm and "accuracy" in m:
+                    gap = tm["accuracy"] - m["accuracy"]
+                    html_parts.append(f"Training accuracy was {tm['accuracy']*100:.1f}% vs test {m['accuracy']*100:.1f}%.")
+                    if gap > 0.1:
+                        html_parts.append(" There's a noticeable gap — the model may be memorizing training data (overfitting).")
+                    elif gap > 0.05:
+                        html_parts.append(" There's a small gap, which is normal but worth watching.")
+                    else:
+                        html_parts.append(" The gap is small, suggesting the model generalizes well.")
+                elif task_type == "regression" and "r2" in tm and "r2" in m:
+                    gap = tm["r2"] - m["r2"]
+                    html_parts.append(f"Training R² was {tm['r2']:.4f} vs test {m['r2']:.4f}.")
+                    if gap > 0.1:
+                        html_parts.append(" There's a noticeable gap — the model may be overfitting.")
+                    elif gap > 0.05:
+                        html_parts.append(" There's a small gap, which is normal but worth watching.")
+                    else:
+                        html_parts.append(" The gap is small, suggesting the model generalizes well.")
+                html_parts.append("</p>")
+
+            html_parts.append("</div>")
+
+            # Cross-validation
+            cv = r.get("cv_scores")
+            if cv:
+                html_parts.append("<div class='card'><h3 style='margin-top:0'>Cross-Validation</h3>")
+                html_parts.append(f"<p class='explain'>The model was tested {cv['folds']} times, each time holding out a different portion of data. "
+                                  f"This gives a more reliable estimate than a single train/test split.</p>")
+                scores_str = ", ".join(f"{s*100:.1f}%" if cv.get("metric") == "accuracy" else f"{s:.4f}" for s in cv.get("scores", []))
+                mean_str = f"{cv['mean']*100:.1f}%" if cv.get("metric") == "accuracy" else f"{cv['mean']:.4f}"
+                html_parts.append(f"<p style='font-size:13px'>Fold scores: {scores_str}</p>")
+                html_parts.append(f"<p style='font-size:13px'><strong>Average: {mean_str}</strong> (&plusmn; {cv.get('std', 0):.4f})</p>")
+                html_parts.append("</div>")
 
             # Feature importance
             fi = r.get("feature_importance", [])
             if fi:
                 max_imp = fi[0]["importance"] if fi else 1
-                html_parts.append("<h3>Feature Importance</h3><table><tbody>")
-                for f in fi[:10]:
+                html_parts.append("<div class='card'><h3 style='margin-top:0'>Feature Importance</h3>")
+                html_parts.append("<p class='explain'>Which columns mattered most to the model's predictions. "
+                                  "Higher bars mean the feature had more influence on the outcome.</p>")
+                html_parts.append("<table><tbody>")
+                for f in fi[:15]:
                     pct = (f["importance"] / max_imp * 100) if max_imp > 0 else 0
                     html_parts.append(
-                        f"<tr><td>{f['feature']}</td>"
-                        f"<td><div class='bar-wrap'><div class='bar' style='width:{pct}%'></div></div></td>"
-                        f"<td class='num'>{f['importance']:.4f}</td></tr>"
+                        f"<tr><td style='width:160px'>{f['feature']}</td>"
+                        f"<td><div class='bar-wrap'><div class='bar' style='width:{pct:.1f}%'></div></div></td>"
+                        f"<td class='num' style='width:60px'>{f['importance']:.4f}</td></tr>"
                     )
-                html_parts.append("</tbody></table>")
+                if len(fi) > 15:
+                    html_parts.append(f"<tr><td colspan='3' class='explain'>...and {len(fi) - 15} more features</td></tr>")
+                html_parts.append("</tbody></table></div>")
 
-            if r.get("train_size"):
-                html_parts.append(f"<p class='meta'>Trained on {r['train_size']} rows, tested on {r.get('test_size', '?')} rows.</p>")
+            # Hyperparams
+            hp = r.get("hyperparams")
+            if hp and len(hp) > 0:
+                html_parts.append("<div class='card'><h3 style='margin-top:0'>Hyperparameters</h3>")
+                html_parts.append("<p class='explain'>Settings used to control how the model learns.</p>")
+                html_parts.append("<table><tbody>")
+                for k, v in hp.items():
+                    html_parts.append(f"<tr><td>{k}</td><td class='num'>{v}</td></tr>")
+                html_parts.append("</tbody></table></div>")
 
-        # SHAP Explanations section (optional)
+        # --- SHAP Explanations ---
         shap_data = params.get("shap_data")
         if shap_data:
             html_parts.append("<h2>SHAP Explanations</h2>")
+            html_parts.append("<div class='card'>")
+            html_parts.append(
+                "<p class='explain' style='margin-bottom:12px'>"
+                "SHAP (SHapley Additive exPlanations) shows <strong>why</strong> the model made each prediction. "
+                "For each sample, every feature either <span class='tag tag-push'>pushed</span> the prediction higher "
+                "or <span class='tag tag-pull'>pulled</span> it lower. Longer bars mean a bigger influence.</p>"
+            )
+
             for si, sample in enumerate(shap_data):
                 pred = sample.get("prediction", "N/A")
-                html_parts.append(f"<h3>Sample {si + 1} — Prediction: {pred}</h3>")
+                html_parts.append(f"<h3>Sample {si + 1} — Predicted: <strong>{pred}</strong></h3>")
                 contributions = sample.get("contributions", [])
                 if contributions:
                     max_abs = max(abs(c.get("shap_value", 0)) for c in contributions) or 1
@@ -762,16 +1002,32 @@ def generate_report(params):
                         sv = c.get("shap_value", 0)
                         bar_pct = abs(sv) / max_abs * 100
                         bar_color = "#22c55e" if sv >= 0 else "#ef4444"
+                        direction = "pushed prediction higher" if sv >= 0 else "pulled prediction lower"
                         html_parts.append(
-                            f"<div style='display:flex;align-items:center;margin:4px 0;font-size:12px'>"
-                            f"<span style='width:140px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'>{fname} = {fval}</span>"
-                            f"<div style='flex:1;background:#e5e5e5;border-radius:3px;height:14px;margin:0 8px;position:relative'>"
-                            f"<div style='width:{bar_pct:.1f}%;background:{bar_color};height:14px;border-radius:3px'></div>"
+                            f"<div class='shap-bar'>"
+                            f"<span class='shap-label'><strong>{fname}</strong> = {fval}</span>"
+                            f"<div class='shap-track'>"
+                            f"<div class='shap-fill' style='width:{bar_pct:.1f}%;background:{bar_color}'></div>"
                             f"</div>"
-                            f"<span style='width:60px;text-align:right;flex-shrink:0'>{sv:+.4f}</span>"
+                            f"<span class='shap-val' style='color:{bar_color}'>{sv:+.4f}</span>"
                             f"</div>"
                         )
+                    # Summary for this sample
+                    top_pushers = [c for c in contributions if c.get("shap_value", 0) > 0][:2]
+                    top_pullers = [c for c in contributions if c.get("shap_value", 0) < 0][:2]
+                    summary_parts = []
+                    if top_pushers:
+                        names = " and ".join(c["feature"] for c in top_pushers)
+                        summary_parts.append(f"<strong>{names}</strong> pushed the prediction higher")
+                    if top_pullers:
+                        names = " and ".join(c["feature"] for c in top_pullers)
+                        summary_parts.append(f"<strong>{names}</strong> pulled it lower")
+                    if summary_parts:
+                        html_parts.append(f"<p class='shap-explain'>{', while '.join(summary_parts)}.</p>")
 
+            html_parts.append("</div>")
+
+        html_parts.append("<p class='meta' style='text-align:center;margin-top:40px'>Generated by Plume — no-code machine learning for everyone</p>")
         html_parts.append("</body></html>")
 
         html = "\n".join(html_parts)

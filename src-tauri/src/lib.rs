@@ -462,6 +462,7 @@ async fn train_model(
     hyperparams: Option<serde_json::Value>,
     use_cv: Option<bool>,
     cv_folds: Option<usize>,
+    positive_class: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     // Export current in-memory DataFrame to temp CSV so Python sees all transforms
@@ -495,6 +496,7 @@ async fn train_model(
                 "hyperparams": hyperparams.unwrap_or(serde_json::json!({})),
                 "use_cv": use_cv.unwrap_or(false),
                 "cv_folds": cv_folds.unwrap_or(5),
+                "positive_class": positive_class,
             }
         })
     };

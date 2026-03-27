@@ -53,13 +53,20 @@ function getRunLabel(result: TrainResult, allResults: TrainResult[]): string {
   const algoLabel = ALGO_LABELS[result.algorithm] ?? result.algorithm;
   const sameAlgo = allResults.filter((r) => r.algorithm === result.algorithm);
   if (sameAlgo.length <= 1) return algoLabel;
-  // Disambiguate with hyperparams
+  // Disambiguate with hyperparams if they differ
   const hp = result.hyperparams;
   if (hp && Object.keys(hp).length > 0) {
     const parts = Object.entries(hp)
       .slice(0, 3)
       .map(([k, v]) => `${HYPERPARAM_SHORT_LABELS[k] ?? k} ${v}`);
     return `${algoLabel} (${parts.join(", ")})`;
+  }
+  // Disambiguate by feature count if they trained on different feature sets
+  const featureCount = result.features_used?.length ?? 0;
+  const sameAlgoFeatureCounts = sameAlgo.map((r) => r.features_used?.length ?? 0);
+  const allSameFeatureCount = sameAlgoFeatureCounts.every((c) => c === featureCount);
+  if (!allSameFeatureCount) {
+    return `${algoLabel} (${featureCount} features)`;
   }
   // Fallback: use run number
   const idx = sameAlgo.indexOf(result);
@@ -793,6 +800,7 @@ function ComparisonTable({
   onSelect: (idx: number) => void;
 }) {
   const removeTrainingResult = useAppStore((s) => s.removeTrainingResult);
+  const removeTrainingSession = useAppStore((s) => s.removeTrainingSession);
   const taskType = results[0]?.task;
   const isClassification = taskType === "classification";
   const isRegression = taskType === "regression";
@@ -828,6 +836,40 @@ function ComparisonTable({
     return -1;
   };
   const bestIdx = getBestIdx();
+
+  // Group results by session (preserving original indices for onSelect)
+  const sessions: { sessionId: string; label: string; items: { result: TrainResult; globalIdx: number }[] }[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    const sid = r.sessionId ?? `orphan-${i}`;
+    if (!seen.has(sid)) {
+      seen.add(sid);
+      const sessionResults = results
+        .map((res, idx) => ({ result: res, globalIdx: idx }))
+        .filter((item) => (item.result.sessionId ?? `orphan-${item.globalIdx}`) === sid);
+      const first = sessionResults[sessionResults.length - 1]?.result; // oldest in session (results are newest-first)
+      const time = first?.trainedAt ? new Date(first.trainedAt) : null;
+      const timeStr = time
+        ? time.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+        : "";
+      const featureCount = first?.features_used?.length ?? 0;
+      const featurePreview = first?.features_used?.slice(0, 3).join(", ") ?? "";
+      const more = featureCount > 3 ? ` +${featureCount - 3} more` : "";
+      const label = `${timeStr}${timeStr ? " — " : ""}${featureCount} feature${featureCount !== 1 ? "s" : ""}${featurePreview ? ` (${featurePreview}${more})` : ""}`;
+      sessions.push({ sessionId: sid, label, items: sessionResults });
+    }
+  }
+
+  const hasSessions = sessions.length > 1 || (sessions.length === 1 && sessions[0].items.length > 1);
+
+  // Count columns for session header colSpan
+  let colCount = 3; // Algorithm + Features + actions
+  if (isClassification) colCount += 4;
+  if (isRegression) colCount += 3;
+  if (isClustering) colCount += 2;
+  if (results.some((r) => r.cv_scores)) colCount += 1;
+  if (hasHyperparams) colCount += 1;
 
   return (
     <motion.div
@@ -872,131 +914,156 @@ function ComparisonTable({
             </tr>
           </thead>
           <tbody>
-            {results.map((r, i) => {
-              const isBest = i === bestIdx;
-              return (
-                <tr
-                  key={i}
-                  className={`border-b border-border/50 transition-colors duration-100 ${
-                    isBest ? "bg-plume-50/50 dark:bg-plume-500/5" : "hover:bg-surface-alt"
-                  }`}
-                >
-                  <td className="px-3 py-2.5 font-medium text-text-primary">
-                    <EditableNickname result={r} resultIndex={i} allResults={results} />
-                    {isBest && (
-                      <span className="ml-2 text-[9px] text-plume-600 dark:text-plume-400 font-normal">best</span>
-                    )}
-                  </td>
-                  {isClassification && (
-                    <>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
-                        {(r.metrics.accuracy * 100).toFixed(1)}%
-                        {r.train_metrics?.accuracy != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.accuracy * 100).toFixed(1)}%</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {(r.metrics.precision * 100).toFixed(1)}%
-                        {r.train_metrics?.precision != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.precision * 100).toFixed(1)}%</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {(r.metrics.recall * 100).toFixed(1)}%
-                        {r.train_metrics?.recall != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.recall * 100).toFixed(1)}%</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {(r.metrics.f1 * 100).toFixed(1)}%
-                        {r.train_metrics?.f1 != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.f1 * 100).toFixed(1)}%</span>
-                        )}
-                      </td>
-                    </>
-                  )}
-                  {isRegression && (
-                    <>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
-                        {r.metrics.r2.toFixed(3)}
-                        {r.train_metrics?.r2 != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.r2.toFixed(3)}</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {r.metrics.mae.toFixed(3)}
-                        {r.train_metrics?.mae != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.mae.toFixed(3)}</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {r.metrics.rmse.toFixed(3)}
-                        {r.train_metrics?.rmse != null && (
-                          <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.rmse.toFixed(3)}</span>
-                        )}
-                      </td>
-                    </>
-                  )}
-                  {isClustering && (
-                    <>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
-                        {r.metrics.n_clusters}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                        {r.metrics.silhouette?.toFixed(3) ?? "—"}
-                      </td>
-                    </>
-                  )}
-                  {results.some((res) => res.cv_scores) && (
-                    <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
-                      {r.cv_scores
-                        ? `${r.cv_scores.metric === "accuracy"
-                            ? `${(r.cv_scores.mean * 100).toFixed(1)}%`
-                            : r.cv_scores.mean.toFixed(3)
-                          } ± ${r.cv_scores.std.toFixed(3)}`
-                        : "—"
-                      }
-                    </td>
-                  )}
-                  {hasHyperparams && (
-                    <td className="px-3 py-2.5 text-text-tertiary">
-                      {r.hyperparams && Object.keys(r.hyperparams).length > 0 ? (
-                        <span className="text-[10px] leading-relaxed">
-                          {Object.entries(r.hyperparams).map(([k, v]) => (
-                            <span key={k} className="inline-block mr-2">
-                              <span className="text-text-tertiary">{HYPERPARAM_SHORT_LABELS[k] ?? k}</span>{" "}
-                              <span className="text-text-secondary tabular-nums">{v}</span>
-                            </span>
-                          ))}
+            {sessions.map((session) => (
+              <React.Fragment key={session.sessionId}>
+                {/* Session header row */}
+                {hasSessions && (
+                  <tr className="bg-surface-alt/50">
+                    <td colSpan={colCount} className="px-3 py-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-text-tertiary font-medium">
+                          {session.label}
                         </span>
-                      ) : (
-                        <span className="text-[10px] text-text-tertiary">defaults</span>
-                      )}
+                        {session.items.length > 1 && !session.sessionId.startsWith("orphan-") && (
+                          <button
+                            onClick={() => removeTrainingSession(session.sessionId)}
+                            className="text-[10px] text-text-tertiary hover:text-red-500 cursor-pointer transition-colors duration-150"
+                            title="Remove all runs in this session"
+                          >
+                            Clear group
+                          </button>
+                        )}
+                      </div>
                     </td>
-                  )}
-                  <td className="px-3 py-2.5 text-right tabular-nums text-text-tertiary">
-                    {r.features_used?.length ?? "—"}
-                  </td>
-                  <td className="px-3 py-2.5 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        onClick={() => onSelect(i)}
-                        className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
-                      >
-                        View
-                      </button>
-                      <button
-                        onClick={() => removeTrainingResult(i)}
-                        className="text-[11px] text-text-tertiary hover:text-red-500 cursor-pointer transition-colors duration-150"
-                        title="Remove this run"
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
+                  </tr>
+                )}
+                {session.items.map(({ result: r, globalIdx: i }) => {
+                  const isBest = i === bestIdx;
+                  return (
+                    <tr
+                      key={i}
+                      className={`border-b border-border/50 transition-colors duration-100 ${
+                        isBest ? "bg-plume-50/50 dark:bg-plume-500/5" : "hover:bg-surface-alt"
+                      }`}
+                    >
+                      <td className="px-3 py-2.5 font-medium text-text-primary">
+                        <EditableNickname result={r} resultIndex={i} allResults={results} />
+                        {isBest && (
+                          <span className="ml-2 text-[9px] text-plume-600 dark:text-plume-400 font-normal">best</span>
+                        )}
+                      </td>
+                      {isClassification && (
+                        <>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
+                            {(r.metrics.accuracy * 100).toFixed(1)}%
+                            {r.train_metrics?.accuracy != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.accuracy * 100).toFixed(1)}%</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {(r.metrics.precision * 100).toFixed(1)}%
+                            {r.train_metrics?.precision != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.precision * 100).toFixed(1)}%</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {(r.metrics.recall * 100).toFixed(1)}%
+                            {r.train_metrics?.recall != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.recall * 100).toFixed(1)}%</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {(r.metrics.f1 * 100).toFixed(1)}%
+                            {r.train_metrics?.f1 != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {(r.train_metrics.f1 * 100).toFixed(1)}%</span>
+                            )}
+                          </td>
+                        </>
+                      )}
+                      {isRegression && (
+                        <>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
+                            {r.metrics.r2.toFixed(3)}
+                            {r.train_metrics?.r2 != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.r2.toFixed(3)}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {r.metrics.mae.toFixed(3)}
+                            {r.train_metrics?.mae != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.mae.toFixed(3)}</span>
+                            )}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {r.metrics.rmse.toFixed(3)}
+                            {r.train_metrics?.rmse != null && (
+                              <span className="block text-[10px] text-text-tertiary">train {r.train_metrics.rmse.toFixed(3)}</span>
+                            )}
+                          </td>
+                        </>
+                      )}
+                      {isClustering && (
+                        <>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-primary">
+                            {r.metrics.n_clusters}
+                          </td>
+                          <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                            {r.metrics.silhouette?.toFixed(3) ?? "—"}
+                          </td>
+                        </>
+                      )}
+                      {results.some((res) => res.cv_scores) && (
+                        <td className="px-3 py-2.5 text-right tabular-nums text-text-secondary">
+                          {r.cv_scores
+                            ? `${r.cv_scores.metric === "accuracy"
+                                ? `${(r.cv_scores.mean * 100).toFixed(1)}%`
+                                : r.cv_scores.mean.toFixed(3)
+                              } ± ${r.cv_scores.std.toFixed(3)}`
+                            : "—"
+                          }
+                        </td>
+                      )}
+                      {hasHyperparams && (
+                        <td className="px-3 py-2.5 text-text-tertiary">
+                          {r.hyperparams && Object.keys(r.hyperparams).length > 0 ? (
+                            <span className="text-[10px] leading-relaxed">
+                              {Object.entries(r.hyperparams).map(([k, v]) => (
+                                <span key={k} className="inline-block mr-2">
+                                  <span className="text-text-tertiary">{HYPERPARAM_SHORT_LABELS[k] ?? k}</span>{" "}
+                                  <span className="text-text-secondary tabular-nums">{v}</span>
+                                </span>
+                              ))}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-text-tertiary">defaults</span>
+                          )}
+                        </td>
+                      )}
+                      <td className="px-3 py-2.5 text-right tabular-nums text-text-tertiary">
+                        {r.features_used?.length ?? "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            onClick={() => onSelect(i)}
+                            className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
+                          >
+                            View
+                          </button>
+                          <button
+                            onClick={() => removeTrainingResult(i)}
+                            className="text-[11px] text-text-tertiary hover:text-red-500 cursor-pointer transition-colors duration-150"
+                            title="Remove this run"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </React.Fragment>
+            ))}
           </tbody>
         </table>
       </div>
@@ -1319,9 +1386,11 @@ function OverfitWarning({
           hyperparams: level.hyperparams,
           useCv: !!result.cv_scores,
           cvFolds: result.cv_scores?.folds ?? 5,
+          positiveClass: result.positive_class ?? null,
         });
         newResult.target = result.target;
         newResult.hyperparams = level.hyperparams;
+        newResult.positive_class = result.positive_class;
 
         const newGap = getGap(newResult);
         const newTestScore = getTestScore(newResult);
@@ -1351,6 +1420,7 @@ function OverfitWarning({
       best.nickname = existingCount === 0
         ? `${algoLabel} (regularized)`
         : `${algoLabel} (regularized ${existingCount + 1})`;
+      best.sessionId = result.sessionId ?? `session-${Date.now()}`;
       addTrainingResult(best);
       onFixApplied(best);
       setBestResult(best);
@@ -1362,6 +1432,7 @@ function OverfitWarning({
       mildest.nickname = existingCount === 0
         ? `${algoLabel} (regularized)`
         : `${algoLabel} (regularized ${existingCount + 1})`;
+      mildest.sessionId = result.sessionId ?? `session-${Date.now()}`;
       addTrainingResult(mildest);
       onFixApplied(mildest);
       setBestResult(mildest);
@@ -1619,8 +1690,15 @@ function OverfitWarning({
   );
 }
 
-function getNextSteps(result: TrainResult): { text: string; priority: "high" | "medium" | "low" }[] {
-  const steps: { text: string; priority: "high" | "medium" | "low" }[] = [];
+interface NextStep {
+  text: string;
+  priority: "high" | "medium" | "low";
+  action?: "drop-low-importance";
+  features?: string[];
+}
+
+function getNextSteps(result: TrainResult): NextStep[] {
+  const steps: NextStep[] = [];
   const isClassification = result.task === "classification";
   const isRegression = result.task === "regression";
   const isClustering = result.task === "clustering";
@@ -1648,7 +1726,12 @@ function getNextSteps(result: TrainResult): { text: string; priority: "high" | "
   if (result.feature_importance?.length && result.feature_importance.length > 5) {
     const lowImportance = result.feature_importance.filter((f) => f.importance < 0.01);
     if (lowImportance.length > 0) {
-      steps.push({ text: `${lowImportance.length} feature${lowImportance.length > 1 ? "s have" : " has"} near-zero importance. Removing them may simplify the model without losing accuracy.`, priority: "medium" });
+      steps.push({
+        text: `${lowImportance.length} feature${lowImportance.length > 1 ? "s have" : " has"} near-zero importance. Removing them may simplify the model without losing accuracy.`,
+        priority: "medium",
+        action: "drop-low-importance",
+        features: lowImportance.map((f) => f.feature),
+      });
     }
   }
 
@@ -1676,6 +1759,10 @@ function getNextSteps(result: TrainResult): { text: string; priority: "high" | "
 
 function NextSteps({ result }: { result: TrainResult }) {
   const steps = getNextSteps(result).slice(0, 5);
+  const [expandedStep, setExpandedStep] = useState<number | null>(null);
+  const [retraining, setRetraining] = useState(false);
+  const addTrainingResult = useAppStore((s) => s.addTrainingResult);
+
   if (steps.length === 0) return null;
 
   const dotColor = {
@@ -1684,14 +1771,101 @@ function NextSteps({ result }: { result: TrainResult }) {
     low: "bg-gray-400 dark:bg-gray-500",
   };
 
+  const handleDropAndRetrain = async (featuresToDrop: string[]) => {
+    if (!result.features_used) return;
+    setRetraining(true);
+    try {
+      const keptFeatures = result.features_used.filter((f) => !featuresToDrop.includes(f));
+      const newResult = await invoke<TrainResult>("train_model", {
+        task: result.task,
+        target: result.target ?? null,
+        features: keptFeatures,
+        algorithm: result.algorithm,
+        nClusters: null,
+        hyperparams: result.hyperparams ?? null,
+        useCv: !!result.cv_scores,
+        cvFolds: result.cv_scores?.folds ?? 5,
+        positiveClass: result.positive_class ?? null,
+      });
+      newResult.target = result.target;
+      newResult.hyperparams = result.hyperparams;
+      newResult.positive_class = result.positive_class;
+      newResult.sessionId = `session-${Date.now()}`;
+      addTrainingResult(newResult);
+    } catch (err) {
+      console.error("Retrain failed:", err);
+    } finally {
+      setRetraining(false);
+    }
+  };
+
   return (
     <div>
       <h3 className="text-[12px] text-text-secondary mb-2">Next steps</h3>
       <div className="flex flex-col gap-1.5">
         {steps.map((step, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <span className={`mt-1.5 w-[6px] h-[6px] rounded-full shrink-0 ${dotColor[step.priority]}`} />
-            <span className="text-[11px] text-text-secondary leading-relaxed">{step.text}</span>
+          <div key={i} className="flex flex-col">
+            <div
+              className={`flex items-start gap-2 ${step.action ? "cursor-pointer" : ""}`}
+              onClick={step.action ? () => setExpandedStep(expandedStep === i ? null : i) : undefined}
+            >
+              <span className={`mt-1.5 w-[6px] h-[6px] rounded-full shrink-0 ${dotColor[step.priority]}`} />
+              <span className="text-[11px] text-text-secondary leading-relaxed">
+                {step.text}
+                {step.action && (
+                  <span className="ml-1 text-plume-600 dark:text-plume-400 hover:underline">
+                    {expandedStep === i ? "Hide" : "Show features"}
+                  </span>
+                )}
+              </span>
+            </div>
+
+            {/* Expandable detail for drop-low-importance */}
+            <AnimatePresence>
+              {step.action === "drop-low-importance" && expandedStep === i && step.features && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="ml-[14px] mt-2 p-2.5 rounded-[var(--radius-default)] border border-border bg-surface-secondary">
+                    <p className="text-[11px] text-text-tertiary mb-2">
+                      {step.features.length === 1 ? "This feature has" : "These features have"} less than 1% importance:
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 mb-2.5">
+                      {step.features.map((f) => (
+                        <span
+                          key={f}
+                          className="px-2 py-0.5 text-[10px] font-medium rounded-full border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 text-amber-800 dark:text-amber-300"
+                        >
+                          {f}
+                        </span>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => handleDropAndRetrain(step.features!)}
+                      disabled={retraining}
+                      className="px-3 py-1.5 text-[11px] font-medium rounded-[var(--radius-default)] bg-plume-600 text-white hover:bg-plume-700 disabled:opacity-50 transition-colors duration-200 cursor-pointer"
+                    >
+                      {retraining ? (
+                        <span className="flex items-center gap-1.5">
+                          <motion.span
+                            className="inline-block w-1.5 h-1.5 rounded-full bg-white/60"
+                            animate={{ scale: [1, 1.3, 1] }}
+                            transition={{ duration: 1, repeat: Infinity }}
+                          />
+                          Retraining...
+                        </span>
+                      ) : (
+                        `Drop ${step.features.length === 1 ? "feature" : `${step.features.length} features`} & retrain`
+                      )}
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         ))}
       </div>
@@ -1844,12 +2018,18 @@ function ReportExportButton({ results }: { results: TrainResult[] }) {
         results: results.map((r) => ({
           task: r.task,
           algorithm: r.algorithm,
+          nickname: r.nickname ?? null,
+          label: getRunLabel(r, results),
           metrics: r.metrics,
+          train_metrics: r.train_metrics,
           feature_importance: r.feature_importance,
           features_used: r.features_used,
           train_size: r.train_size,
           test_size: r.test_size,
           cv_scores: r.cv_scores,
+          positive_class: r.positive_class ?? null,
+          target: r.target ?? null,
+          hyperparams: r.hyperparams ?? null,
         })),
         shapData,
         outputPath: filePath,
@@ -2061,9 +2241,12 @@ function RetrainPanel({ result, onRetrained }: { result: TrainResult; onRetraine
         hyperparams: built,
         useCv: !!originalResult.cv_scores,
         cvFolds: originalResult.cv_scores?.folds ?? 5,
+        positiveClass: originalResult.positive_class ?? null,
       });
       newResult.target = originalResult.target;
       newResult.hyperparams = built;
+      newResult.positive_class = originalResult.positive_class;
+      newResult.sessionId = originalResult.sessionId ?? `session-${Date.now()}`;
       addTrainingResult(newResult);
       setRetrainResult(newResult);
       onRetrained();

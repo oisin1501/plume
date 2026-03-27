@@ -68,6 +68,7 @@ const HYPERPARAMS: Record<string, HyperparamDef[]> = {
 
 export function ModelView() {
   const summary = useAppStore((s) => s.summary);
+  const trainingResults = useAppStore((s) => s.trainingResults);
   const [task, setTask] = useState<Task>(null);
   const [target, setTarget] = useState<string | null>(null);
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
@@ -79,7 +80,12 @@ export function ModelView() {
   const [hyperparams, setHyperparams] = useState<Record<string, number>>({});
   const [useCv, setUseCv] = useState(false);
   const [cvFolds, setCvFolds] = useState(5);
+  const [positiveClass, setPositiveClass] = useState<string | null>(null);
+  const [targetClasses, setTargetClasses] = useState<string[]>([]);
+  const [showRecall, setShowRecall] = useState(false);
+  const recallRef = useRef<HTMLDivElement>(null);
   const [comparing, setComparing] = useState(false);
+  const [compareProgress, setCompareProgress] = useState<{ current: number; total: number; label: string } | null>(null);
   const [trainError, setTrainError] = useState<string | null>(null);
 
   const [profiles, setProfiles] = useState<ColumnProfile[]>([]);
@@ -92,6 +98,18 @@ export function ModelView() {
   const [autoTuning, setAutoTuning] = useState(false);
   const [autoTuneData, setAutoTuneData] = useState<AutoTuneResult | null>(null);
   const [autoTuneError, setAutoTuneError] = useState<string | null>(null);
+
+  // Close recall dropdown on outside click
+  useEffect(() => {
+    if (!showRecall) return;
+    const handler = (e: MouseEvent) => {
+      if (recallRef.current && !recallRef.current.contains(e.target as Node)) {
+        setShowRecall(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showRecall]);
 
   useEffect(() => {
     if (summary) {
@@ -286,12 +304,26 @@ export function ModelView() {
     if (target === col) {
       setTarget(null);
       setSelectedFeatures([]);
+      setTargetClasses([]);
+      setPositiveClass(null);
       return;
     }
     setTarget(col);
+    setPositiveClass(null);
+    setTargetClasses([]);
     // Auto-select all features except the target and ID-like columns
     const autoFeatures = columns.filter((c) => c !== col && !idLikeColumns.has(c));
     setSelectedFeatures(autoFeatures);
+    // Fetch unique classes for binary classification positive class picker
+    if (task === "classification") {
+      invoke<{ labels: string[]; counts: number[] }>("get_column_distribution", { columnName: col })
+        .then((dist) => {
+          if (dist.labels.length === 2) {
+            setTargetClasses(dist.labels);
+          }
+        })
+        .catch(console.error);
+    }
   };
 
   const toggleFeature = (col: string) => {
@@ -380,6 +412,7 @@ export function ModelView() {
   const handleTrain = async () => {
     setTraining(true);
     setTrainError(null);
+    const sessionId = `session-${Date.now()}`;
     try {
       const result = await invoke<TrainResult>("train_model", {
         task,
@@ -390,10 +423,13 @@ export function ModelView() {
         hyperparams: buildHyperparams(),
         useCv: useCv,
         cvFolds: cvFolds,
+        positiveClass: positiveClass,
       });
 
       result.target = target;
       result.hyperparams = buildHyperparams();
+      result.sessionId = sessionId;
+      result.positive_class = positiveClass;
       addTrainingResult(result);
       useAppStore.setState({ view: "results" });
     } catch (err) {
@@ -408,9 +444,12 @@ export function ModelView() {
     if (!task) return;
     setComparing(true);
     setTrainError(null);
+    const sessionId = `session-${Date.now()}`;
     const algos = ALGO_OPTIONS[task];
     const failures: string[] = [];
-    for (const algo of algos) {
+    for (let i = 0; i < algos.length; i++) {
+      const algo = algos[i];
+      setCompareProgress({ current: i + 1, total: algos.length, label: algo.label });
       try {
         const result = await invoke<TrainResult>("train_model", {
           task,
@@ -421,8 +460,11 @@ export function ModelView() {
           hyperparams: undefined,
           useCv: useCv,
           cvFolds: cvFolds,
+          positiveClass: positiveClass,
         });
         result.target = target;
+        result.sessionId = sessionId;
+        result.positive_class = positiveClass;
         addTrainingResult(result);
       } catch (err) {
         console.error(`${algo.label} failed:`, err);
@@ -430,6 +472,7 @@ export function ModelView() {
       }
     }
     setComparing(false);
+    setCompareProgress(null);
     if (failures.length > 0 && failures.length < algos.length) {
       setTrainError(`${failures.join(", ")} failed. Other models trained successfully.`);
     } else if (failures.length === algos.length) {
@@ -583,6 +626,38 @@ export function ModelView() {
             </div>
           )}
 
+          {/* Positive class picker (binary classification only) */}
+          {task === "classification" && target && targetClasses.length === 2 && (
+            <div className="mb-6 -mt-4">
+              <label className="text-[11px] text-text-tertiary mb-1.5 block">
+                Which class do you want to detect? (positive class)
+              </label>
+              <div className="flex gap-2">
+                {targetClasses.map((cls) => (
+                  <button
+                    key={cls}
+                    onClick={() => setPositiveClass(positiveClass === cls ? null : cls)}
+                    className={`
+                      px-3 py-1.5 text-[12px] rounded-[var(--radius-default)] border
+                      transition-all duration-200 cursor-pointer
+                      ${positiveClass === cls
+                        ? "border-plume-500 bg-plume-50 dark:bg-plume-500/10 text-plume-700 dark:text-plume-400"
+                        : "border-border text-text-secondary hover:border-text-tertiary"
+                      }
+                    `}
+                  >
+                    {cls}
+                  </button>
+                ))}
+              </div>
+              {!positiveClass && (
+                <p className="text-[10px] text-text-tertiary mt-1">
+                  Optional — affects how precision, recall, and F1 are calculated. If not set, Plume picks automatically.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Feature selection */}
           {(isSupervised ? target : true) && (() => {
             const searchLower = featureSearch.toLowerCase();
@@ -646,6 +721,66 @@ export function ModelView() {
                   >
                     Invert
                   </button>
+                  {trainingResults.length > 0 && (
+                    <div className="relative" ref={recallRef}>
+                      <button
+                        onClick={() => setShowRecall(!showRecall)}
+                        className="text-[11px] text-plume-600 dark:text-plume-500 hover:text-plume-700 cursor-pointer"
+                      >
+                        Recall
+                      </button>
+                      <AnimatePresence>
+                        {showRecall && (
+                          <motion.div
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -4 }}
+                            transition={{ duration: 0.15 }}
+                            className="absolute right-0 top-6 z-50 w-[280px] max-h-[240px] overflow-y-auto bg-surface border border-border rounded-[var(--radius-default)] shadow-lg p-1.5"
+                          >
+                            {(() => {
+                              // Deduplicate by feature set — show unique combinations
+                              const seen = new Map<string, { label: string; features: string[] }>();
+                              for (const r of trainingResults) {
+                                if (!r.features_used?.length) continue;
+                                const key = [...r.features_used].sort().join(",");
+                                if (seen.has(key)) continue;
+                                const algoEntry = Object.values(ALGO_OPTIONS).flat().find((a) => a.value === r.algorithm);
+                                const algo = algoEntry?.label ?? r.algorithm;
+                                const time = r.trainedAt ? new Date(r.trainedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+                                const label = `${algo} — ${r.features_used.length} features${time ? ` (${time})` : ""}`;
+                                seen.set(key, { label, features: r.features_used });
+                              }
+                              const options = Array.from(seen.values());
+                              if (options.length === 0) {
+                                return (
+                                  <p className="text-[11px] text-text-tertiary px-2 py-1.5">No previous feature sets</p>
+                                );
+                              }
+                              return options.map((opt, i) => (
+                                <button
+                                  key={i}
+                                  onClick={() => {
+                                    // Only select features that still exist in the current dataset
+                                    const available = new Set(availableFeatures);
+                                    setSelectedFeatures(opt.features.filter((f) => available.has(f)));
+                                    setShowRecall(false);
+                                  }}
+                                  className="w-full text-left px-2.5 py-2 text-[11px] rounded hover:bg-surface-alt transition-colors duration-100 cursor-pointer"
+                                >
+                                  <span className="text-text-primary font-medium">{opt.label}</span>
+                                  <span className="block text-[10px] text-text-tertiary mt-0.5 truncate">
+                                    {opt.features.slice(0, 5).join(", ")}
+                                    {opt.features.length > 5 && ` +${opt.features.length - 5} more`}
+                                  </span>
+                                </button>
+                              ));
+                            })()}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </div>
               </div>
               {availableFeatures.length > 15 && (
@@ -1043,14 +1178,14 @@ export function ModelView() {
                     disabled={training || comparing}
                     className="px-4 py-2.5 text-[13px] font-medium rounded-[var(--radius-default)] border border-plume-500 text-plume-600 dark:text-plume-400 hover:bg-plume-50 dark:hover:bg-plume-500/10 disabled:opacity-50 transition-colors duration-200 cursor-pointer"
                   >
-                    {comparing ? (
+                    {comparing && compareProgress ? (
                       <span className="flex items-center gap-2">
                         <motion.span
                           className="inline-block w-2 h-2 rounded-full bg-plume-500/60"
                           animate={{ scale: [1, 1.3, 1] }}
                           transition={{ duration: 1, repeat: Infinity }}
                         />
-                        Comparing...
+                        Training {compareProgress.label} ({compareProgress.current}/{compareProgress.total})
                       </span>
                     ) : (
                       "Compare all"
